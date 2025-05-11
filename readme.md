@@ -1,1 +1,1 @@
-An 8-bit, 256-byte custom CPU written in Verilog, featuring a minimal instruction set including addition, subtraction, increment, and decrement operations.
+An 8-bit, 256-byte custom CPU written in SystemVerilog, featuring a minimal instruction set including addition, subtraction, increment, and decrement operations.
