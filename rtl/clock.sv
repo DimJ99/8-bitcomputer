@@ -6,7 +6,7 @@ module clock (
 
   initial clk = 0;
   always begin
-    #10; //10 ns or sm idek
+    #1; //1 ns or sm idek
     if (enable)
       clk = ~clk;
   end
