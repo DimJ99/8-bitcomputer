@@ -23,12 +23,12 @@ module alu (
   logic [7:0] buff_out;
 
   always_ff @(posedge clk or posedge reset) begin
-    if (reset) begin
+    if (reset) begin //reset to zero
       buff_out   <= 8'd0;
       flag_zero  <= 1'b0;
       flag_carry <= 1'b0;
     end else if (enable) begin
-      case (op)
+      case (op) // ALU operation
         ALU_ADD: {flag_carry, buff_out} <= in_a + in_b;
         ALU_ADC: {flag_carry, buff_out} <= in_a + in_b + flag_carry;
         ALU_SUB: {flag_carry, buff_out} <= in_a - in_b;
@@ -55,6 +55,6 @@ module alu (
     end
   end
 
-  assign out = buff_out;
+  assign out = buff_out; // Output the result of the ALU operation
 
 endmodule
