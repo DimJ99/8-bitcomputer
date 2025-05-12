@@ -6,6 +6,8 @@ module counter(
   input  logic              down,
   output logic [7:0] out
 );
+  input logic enable;
+
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       out <= '0;

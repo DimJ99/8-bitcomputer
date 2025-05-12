@@ -52,20 +52,20 @@ module cpu_ctrl (
   always_ff @(posedge reset_cycle) begin
     cycle <= 0;
   end
+always_ff @(posedge clk) begin
+  casez (instruction)
+    8'b00_010_???: opcode <= OP_LDI;
+    8'b10_???_???: opcode <= OP_MOV;
+    8'b01_???_000: opcode <= OP_ALU;
+    8'b00_011_???: opcode <= OP_JMP;
+    8'b00_100_???: opcode <= OP_PUSH;
+    8'b00_101_???: opcode <= OP_POP;
+    default:        opcode <= instruction;
+  endcase
+end
 
   // Main state control logic
   always_ff @(posedge clk) begin
-    // Instruction decoding using pattern matching
-    casez (instruction)
-      8'b00_010_???: opcode <= OP_LDI;   // LDI
-      8'b10_???_???: opcode <= OP_MOV;   // MOV
-      8'b01_???_000: opcode <= OP_ALU;   // ALU
-      8'b00_011_???: opcode <= OP_JMP;   // JMP
-      8'b00_100_???: opcode <= OP_PUSH;  // PUSH
-      8'b00_101_???: opcode <= OP_POP;   // POP
-      default:        opcode <= instruction;  // passthrough fallback
-    endcase
-
     // FSM state transitions based on cycle
     case (cycle)
       4'b0000: state <= STATE_FETCH_PC; // STATE_FETCH_PC

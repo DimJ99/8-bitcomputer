@@ -11,6 +11,7 @@ always_ff @(posedge clk or posedge reset) begin
   end else if (enable) begin
     out <= in;
     $display("[MAR] loading bus = %0h into addr_bus", in);
+
   end
 end
 
