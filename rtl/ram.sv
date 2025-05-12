@@ -6,6 +6,11 @@ module ram (
   inout  logic [7:0] data  
 );
 
+initial begin
+  $readmemh("memory.list", mem);
+  $display("Memory initialized from memory.list");
+end
+
   // 256 x 8-bit memory
   logic [7:0] mem [0:255];
   logic [7:0] buffer;
@@ -22,6 +27,7 @@ module ram (
       $display("Memory: set [0x%0h] => 0x%0h (%0d)", addr, data, data);
     end else begin
       buffer <= mem[addr];
+          $display("[RAM] READ   @ 0x%0h => 0x%0h", addr, mem[addr]);
     end
   end
 
