@@ -107,7 +107,7 @@ module cpu (
   logic       c_rfi, c_rfo;
 
   cpu_reg m_registers (
-.clk           (internal_clk),
+.clk           (clk),
 .reset         (reset),       // Make sure reset is connected
 .data_in       (bus),         // read from bus
 .sel_in        (sel_in),
@@ -127,7 +127,7 @@ module cpu (
 
   register m_regi (
     .in    (bus),
-    .clk   (internal_clkclk),
+    .clk   (clk),
     .enable(c_ii),
     .reset (reset),
     .out   (regi_out)
@@ -214,6 +214,17 @@ assign bus_drive_alu = c_eo;         // ALU out
 assign bus_from_reg = regs_out;
 assign bus_drive_reg = c_rfo;        // register file out
 
+assign safe_bus_drive_pc  = (bus_drive_pc  === 1'b1);
+assign safe_bus_drive_sp  = (bus_drive_sp  === 1'b1);
+assign safe_bus_drive_alu = (bus_drive_alu === 1'b1);
+assign safe_bus_drive_reg = (bus_drive_reg === 1'b1);
+
+// Only one driver at a time
+assign bus = safe_bus_drive_pc  ? bus_from_pc  :
+             safe_bus_drive_sp  ? bus_from_sp  :
+             safe_bus_drive_alu ? bus_from_alu :
+             safe_bus_drive_reg ? bus_from_reg :
+             8'hZZ;
 
 
   // ─────────────────────────────────────────────────────────────
@@ -311,7 +322,7 @@ assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
   );
 
   // Halt flip‑flop
-  //debug shuiu
+  
   always_ff @(posedge c_halt) halted <= 1;
   always_ff @(posedge clk) begin
   if (state == STATE_FETCH_INST) begin
