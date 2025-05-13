@@ -49,10 +49,16 @@ module cpu_ctrl (
   end
 
   // Reset cycle on rising edge of reset_cycle
-  always_ff @(posedge reset_cycle) begin
+always_ff @(posedge clk or posedge reset_cycle) begin
+  if(reset_cycle) begin
     cycle <= 0;
+  end else begin  // Fix the "else begin" here
+    cycle <= (cycle > 6) ? 0 : cycle + 1;
   end
-always_ff @(posedge clk) begin
+end
+
+
+always_comb begin
   casez (instruction)
     8'b00_010_???: opcode <= OP_LDI;
     8'b10_???_???: opcode <= OP_MOV;
@@ -106,10 +112,13 @@ end
       4'b0111: state <= STATE_NEXT; 
 
       default: $display("Cannot decode: cycle = %0d, instruction = %h", cycle, instruction);
+    
     endcase
 
-    // Cycle increment with wrap-around
-    cycle <= (cycle > 6) ? 0 : cycle + 1;
+
   end
+  always_ff @(posedge clk) begin
+  $display("[OPCODE DEBUG] Raw instruction: %h, Decoded opcode: %h", instruction, opcode);
+end
 
 endmodule

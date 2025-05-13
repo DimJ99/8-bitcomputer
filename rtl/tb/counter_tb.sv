@@ -30,5 +30,7 @@ module test;
   initial begin
     $monitor("At time %0t: VALUE = 0x%0h (%0d)", $time, value, value);
   end
-
+initial begin
+  #5000 $display("Simulation timed out!"); $finish;
+end
 endmodule

@@ -36,5 +36,7 @@ module register_tb;
     $monitor("At time %0t: VALUE = 0x%0h (%0d), ENABLE = %b",
               $time, value, value, enable);
   end
-
+initial begin
+  #5000 $display("Simulation timed out!"); $finish;
+end
 endmodule

@@ -1,9 +1,6 @@
+#!/usr/bin/env python3
 import re
 import sys
-
-if len(sys.argv) < 2:
-    print("Usage: python3 asm.py program.asm")
-    sys.exit(1)
 
 progf = sys.argv[1]
 

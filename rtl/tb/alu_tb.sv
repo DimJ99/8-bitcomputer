@@ -34,5 +34,7 @@ module alu_tb;
     $monitor("time=%0t | CIN=%0b COUT=%0b | A=%0d B=%0d → SUM=%0d", 
               $time, cin, cout, in_a, in_b, sum);
   end
-
+initial begin
+  #5000 $display("Simulation timed out!"); $finish;
+end
 endmodule

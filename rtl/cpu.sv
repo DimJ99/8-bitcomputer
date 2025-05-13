@@ -134,7 +134,7 @@ module cpu (
   );
 
   // ─────────────────────────────────────────────────────────────
-  //  Memory‑address register
+  //  Memory‑address  
   // ─────────────────────────────────────────────────────────────
   logic c_mi;
   register m_mar (
@@ -176,7 +176,7 @@ module cpu (
   );
 
   // ─────────────────────────────────────────────────────────────
-  //  ALU (combinational + flags)
+  //  ALU 
   // ─────────────────────────────────────────────────────────────
   logic       c_eo, c_ee;
   logic [7:0] alu_out;
@@ -352,6 +352,11 @@ $display("[BUS EN] PC:%b SP:%b ALU:%b REG:%b",
   safe_bus_drive_pc, safe_bus_drive_sp, safe_bus_drive_alu, safe_bus_drive_reg);
 $display("[CTRL EN] c_co=%b c_so=%b c_eo=%b c_rfo=%b", 
   c_co, c_so, c_eo, c_rfo);
+  if (state == STATE_SET_REG) begin
+  $display("[SET_REG] Writing 0x%0h to reg[%0d] from bus=0x%0h",
+           bus, sel_in, bus);
+end
+
 
 end
 
