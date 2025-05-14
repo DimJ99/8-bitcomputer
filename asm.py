@@ -141,5 +141,10 @@ for i, name in symbolic_refs.items():
         sys.exit(1)
     mem[i] = data_addr[name]
 
+# ✅ Pad memory to 256 bytes
+while len(mem) < MEM_SIZE:
+    mem.append(0)
+
 # Output memory in hex format
 print(' '.join(f"{b:02x}" for b in mem))
+

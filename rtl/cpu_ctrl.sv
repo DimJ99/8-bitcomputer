@@ -6,7 +6,7 @@ module cpu_ctrl (
   output logic [3:0] cycle,
   output logic [7:0] opcode
 );
-// FUCK THIS SHIT MAN
+
   localparam [7:0]
     OP_NOP   = 8'b00_000_000,
     OP_CALL  = 8'b00_000_001,
@@ -21,6 +21,7 @@ module cpu_ctrl (
     OP_POP   = 8'b00_101_000,
     OP_ALU   = 8'b01_000_000,
     OP_MOV   = 8'b10_000_000;
+
   localparam [7:0]
     STATE_NEXT        = 8'h00,
     STATE_FETCH_PC    = 8'h01,
@@ -43,82 +44,82 @@ module cpu_ctrl (
     STATE_REG_STORE   = 8'h13,
     STATE_SET_REG     = 8'h14;
 
-  // Initialize cycle to 0
-  initial begin
-    cycle = 0;
+  logic [7:0] instruction_reg;
+  logic [7:0] latched_opcode;
+
+  initial cycle = 0;
+
+  always_ff @(posedge clk or posedge reset_cycle) begin
+    if (reset_cycle) begin
+      cycle <= 0;
+    end else begin
+      cycle <= (cycle > 6) ? 0 : cycle + 1;
+    end
   end
 
-  // Reset cycle on rising edge of reset_cycle
-always_ff @(posedge clk or posedge reset_cycle) begin
-  if(reset_cycle) begin
-    cycle <= 0;
-  end else begin  // Fix the "else begin" here
-    cycle <= (cycle > 6) ? 0 : cycle + 1;
-  end
-end
-
-
-always_comb begin
-  casez (instruction)
-    8'b00_010_???: opcode <= OP_LDI;
-    8'b10_???_???: opcode <= OP_MOV;
-    8'b01_???_000: opcode <= OP_ALU;
-    8'b00_011_???: opcode <= OP_JMP;
-    8'b00_100_???: opcode <= OP_PUSH;
-    8'b00_101_???: opcode <= OP_POP;
-    default:        opcode <= instruction;
-  endcase
-end
-
-  // Main state control logic
+  // Latch instruction at cycle 2
   always_ff @(posedge clk) begin
-    // FSM state transitions based on cycle
+    if (cycle == 4'b0010) begin
+      instruction_reg <= instruction;
+    end
+  end
+
+  // Decode instruction at cycle 3
+  always_ff @(posedge clk) begin
+    if (cycle == 4'b0011) begin
+      casez (instruction_reg)
+        8'b00_010_???: latched_opcode <= OP_LDI;
+        8'b10_???_???: latched_opcode <= OP_MOV;
+        8'b01_???_000: latched_opcode <= OP_ALU;
+        8'b00_011_???: latched_opcode <= OP_JMP;
+        8'b00_100_???: latched_opcode <= OP_PUSH;
+        8'b00_101_???: latched_opcode <= OP_POP;
+        default:        latched_opcode <= instruction_reg;
+      endcase
+    end
+  end
+
+  // FSM using latched_opcode starting at cycle 4
+  always_ff @(posedge clk) begin
     case (cycle)
-      4'b0000: state <= STATE_FETCH_PC; // STATE_FETCH_PC
-      4'b0001: state <= STATE_FETCH_INST; // STATE_FETCH_INST
-
-      4'b0010: state <= (opcode == OP_HLT)                                ? STATE_HALT : // OP_HLT → STATE_HALT
-                        (opcode == OP_MOV)                                ? STATE_MOV_FETCH : // OP_MOV → STATE_MOV_FETCH
-                        (opcode == OP_ALU || opcode == OP_CMP)            ? STATE_ALU_EXEC : // OP_ALU or OP_CMP → STATE_ALU_EXEC
-                        (opcode == OP_RET || opcode == OP_POP)            ? STATE_INC_SP : // OP_RET or OP_POP → STATE_INC_SP
-                        (opcode == OP_PUSH)                               ? STATE_FETCH_SP : // OP_PUSH → STATE_FETCH_SP
-                        (opcode == OP_IN || opcode == OP_OUT || 
-                         opcode == OP_CALL || opcode == OP_LDI || 
-                         opcode == OP_JMP)                                ? STATE_FETCH_PC : // IN, OUT, CALL, LDI, JMP → STATE_FETCH_PC
-                                                                          STATE_NEXT; // STATE_NEXT
-
-      4'b0011: state <= (opcode == OP_JMP)                                ? STATE_JUMP : // OP_JMP → STATE_JUMP
-                        (opcode == OP_LDI)                                ? STATE_SET_REG : // OP_LDI → STATE_SET_REG
-                        (opcode == OP_MOV)                                ? STATE_MOV_LOAD : // OP_MOV → STATE_MOV_LOAD
-                        (opcode == OP_ALU)                                ? STATE_ALU_OUT : // OP_ALU → STATE_ALU_OUT
-                        (opcode == OP_OUT || opcode == OP_IN)             ? STATE_SET_ADDR : // OUT or IN → STATE_SET_ADDR
-                        (opcode == OP_PUSH)                               ? STATE_REG_STORE : // OP_PUSH → STATE_REG_STORE
-                        (opcode == OP_CALL)                               ? STATE_SET_REG : // OP_CALL → STATE_SET_REG
-                        (opcode == OP_RET || opcode == OP_POP)            ? STATE_FETCH_SP : // RET or POP → STATE_FETCH_SP
-                                                                          STATE_NEXT;
-
-      4'b0100: state <= (opcode == OP_MOV)                                ? STATE_MOV_STORE : // OP_MOV → STATE_MOV_STORE
-                        (opcode == OP_CALL)                               ? STATE_FETCH_SP : // OP_CALL → STATE_FETCH_SP
-                        (opcode == OP_RET)                                ? STATE_RET : // OP_RET → STATE_RET
-                        (opcode == OP_OUT)                                ? STATE_OUT : // OP_OUT → STATE_OUT
-                        (opcode == OP_POP)                                ? STATE_SET_REG : // OP_POP → STATE_SET_REG
-                        (opcode == OP_IN)                                 ? STATE_IN : // OP_IN → STATE_IN
-                                                                          STATE_NEXT;
-
-      4'b0101: state <= (opcode == OP_CALL) ? STATE_PC_STORE : STATE_NEXT; // OP_CALL → STATE_PC_STORE
-
-      4'b0110: state <= (opcode == OP_CALL) ? STATE_TMP_JUMP : STATE_NEXT; // OP_CALL → STATE_TMP_JUMP
-
-      4'b0111: state <= STATE_NEXT; 
-
-      default: $display("Cannot decode: cycle = %0d, instruction = %h", cycle, instruction);
-    
+      4'b0000: state <= STATE_FETCH_PC;
+      4'b0001: state <= STATE_FETCH_INST;
+      4'b0010: state <= STATE_NEXT;
+      4'b0011: state <= STATE_NEXT;
+      4'b0100: state <= (latched_opcode == OP_HLT)                                ? STATE_HALT :
+                        (latched_opcode == OP_MOV)                                ? STATE_MOV_FETCH :
+                        (latched_opcode == OP_ALU || latched_opcode == OP_CMP)    ? STATE_ALU_EXEC :
+                        (latched_opcode == OP_RET || latched_opcode == OP_POP)    ? STATE_INC_SP :
+                        (latched_opcode == OP_PUSH)                               ? STATE_FETCH_SP :
+                        (latched_opcode == OP_IN || latched_opcode == OP_OUT || 
+                         latched_opcode == OP_CALL || latched_opcode == OP_LDI || 
+                         latched_opcode == OP_JMP)                                ? STATE_FETCH_PC :
+                                                                                   STATE_NEXT;
+      4'b0101: state <= (latched_opcode == OP_JMP)                                ? STATE_JUMP :
+                        (latched_opcode == OP_LDI)                                ? STATE_SET_REG :
+                        (latched_opcode == OP_MOV)                                ? STATE_MOV_LOAD :
+                        (latched_opcode == OP_ALU)                                ? STATE_ALU_OUT :
+                        (latched_opcode == OP_OUT || latched_opcode == OP_IN)     ? STATE_SET_ADDR :
+                        (latched_opcode == OP_PUSH)                               ? STATE_REG_STORE :
+                        (latched_opcode == OP_CALL)                               ? STATE_SET_REG :
+                        (latched_opcode == OP_RET || latched_opcode == OP_POP)    ? STATE_FETCH_SP :
+                                                                                   STATE_NEXT;
+      4'b0110: state <= (latched_opcode == OP_MOV)                                ? STATE_MOV_STORE :
+                        (latched_opcode == OP_CALL)                               ? STATE_FETCH_SP :
+                        (latched_opcode == OP_RET)                                ? STATE_RET :
+                        (latched_opcode == OP_OUT)                                ? STATE_OUT :
+                        (latched_opcode == OP_POP)                                ? STATE_SET_REG :
+                        (latched_opcode == OP_IN)                                 ? STATE_IN :
+                                                                                   STATE_NEXT;
+      4'b0111: state <= (latched_opcode == OP_CALL) ? STATE_PC_STORE : STATE_NEXT;
     endcase
 
-
+    // Always print debug info
+    $display("[CTRL FSM] Cycle=%0d | instruction = %h (%b)", cycle, instruction, instruction);
+    $display("[CTRL FSM] instruction_reg = %h | latched_opcode = %h", instruction_reg, latched_opcode);
+    $display("[CTRL FSM] state = %h", state);
   end
-  always_ff @(posedge clk) begin
-  $display("[OPCODE DEBUG] Raw instruction: %h, Decoded opcode: %h", instruction, opcode);
-end
+
+  assign opcode = latched_opcode;
 
 endmodule
