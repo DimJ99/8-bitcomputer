@@ -178,7 +178,7 @@ module cpu (
   // ─────────────────────────────────────────────────────────────
   //  ALU 
   // ─────────────────────────────────────────────────────────────
-  logic       c_eo, c_ee;
+  logic       c_eo_alu, c_ee;
   logic [7:0] alu_out;
   logic [2:0] alu_op;
 
@@ -194,6 +194,20 @@ module cpu (
     .flag_carry (flag_carry)
   );
 
+  assign c_eo_alu = (state == STATE_ALU_OUT);
+// ─────────────────────────────────────────────────────────────
+//  Immediate value register for LDI
+// ─────────────────────────────────────────────────────────────
+logic [7:0] imm_out;
+logic       c_ie;
+
+register m_imm (
+  .in     (bus),
+  .clk    (clk),
+  .enable (c_ie),
+  .reset  (reset),
+  .out    (imm_out)
+);
 // Mask X/Z on enable lines so only definite 1 drives bus
 logic safe_bus_drive_pc;
 logic safe_bus_drive_sp;
@@ -209,7 +223,10 @@ assign bus_from_sp  = sp_out;
 assign bus_drive_sp = c_so;          // stack pointer out
 
 assign bus_from_alu = alu_out;
-assign bus_drive_alu = c_eo;         // ALU out
+assign bus_drive_alu = c_eo_alu;         // ALU out
+logic c_eo_imm;
+assign c_eo_imm = (state == STATE_SET_REG);
+assign c_eo = c_eo_alu || c_eo_imm;
 
 assign bus_from_reg = regs_out;
 assign bus_drive_reg = c_rfo;        // register file out
@@ -218,13 +235,22 @@ assign safe_bus_drive_pc  = (bus_drive_pc  === 1'b1);
 assign safe_bus_drive_sp  = (bus_drive_sp  === 1'b1);
 assign safe_bus_drive_alu = (bus_drive_alu === 1'b1);
 assign safe_bus_drive_reg = (bus_drive_reg === 1'b1);
+logic [7:0] bus_from_imm;
+logic       bus_drive_imm;
+logic       safe_bus_drive_imm;
 
-// Only one driver at a time
-assign bus = safe_bus_drive_pc  ? bus_from_pc  :
-             safe_bus_drive_sp  ? bus_from_sp  :
-             safe_bus_drive_alu ? bus_from_alu :
-             safe_bus_drive_reg ? bus_from_reg :
+assign bus_from_imm  = imm_out;
+assign bus_drive_imm = c_eo_imm;
+assign safe_bus_drive_imm = (bus_drive_imm === 1'b1);
+
+assign bus = safe_bus_drive_pc   ? bus_from_pc   :
+             safe_bus_drive_sp   ? bus_from_sp   :
+             safe_bus_drive_alu  ? bus_from_alu  :
+             safe_bus_drive_reg  ? bus_from_reg  :
+             safe_bus_drive_imm  ? bus_from_imm  :
              8'hZZ;
+
+assign c_ie = (state == STATE_SET_REG && opcode == OP_LDI);
 
 
   // ─────────────────────────────────────────────────────────────
@@ -279,10 +305,10 @@ end
 
 assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
                state == STATE_SET_ADDR ||
-               state == STATE_SET_REG ||
                (state == STATE_MOV_FETCH && mov_memory));
 
-  assign c_eo   = (state == STATE_ALU_OUT);
+assign c_eo = (state == STATE_ALU_OUT || state == STATE_SET_REG);
+
   assign c_halt = (state == STATE_HALT);
   assign c_ii   = (state == STATE_FETCH_INST);
   assign c_j    = ((state == STATE_JUMP && jump_allowed) ||
@@ -313,9 +339,9 @@ assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
 
   // Instantiate control FSM
   cpu_ctrl m_ctrl (
-    .instruction (instruction),
+    .instruction (regi_out),
     .state       (state),
-    .reset_cycle (next_state),
+    .reset_cycle (reset_cycle),
     .clk         (cycle_clk),
     .cycle       (cycle),
     .opcode      (opcode)
@@ -331,6 +357,10 @@ assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
 end
 
 always_ff @(posedge clk) begin
+  if (c_ie) begin
+  $display("[IMM LOAD] Immediate value 0x%0h loaded into imm register", bus);
+end
+
   $display("[CPU] PC: %0h, Instruction: %0h, State: %0d", pc_out, instruction, state);
   // Shows what's on the bus during instruction fetch
 if (state == STATE_FETCH_INST) begin
@@ -341,7 +371,8 @@ end
 if (c_ii) begin
   $display("[IR LOAD] Instruction register set to 0x%0h from bus", bus);
 end
-
+  $display("BUS DRIVER CHECK: pc=%b sp=%b alu=%b reg=%b imm=%b",
+            safe_bus_drive_pc, safe_bus_drive_sp, safe_bus_drive_alu, safe_bus_drive_reg, safe_bus_drive_imm);
 // Decode state – show full FSM progression
 $display("[STATE] PC: 0x%0h | State: %0h | Opcode: %0h | Inst: 0x%0h", pc_out, state, opcode, instruction);
 
@@ -352,12 +383,19 @@ $display("[BUS EN] PC:%b SP:%b ALU:%b REG:%b",
   safe_bus_drive_pc, safe_bus_drive_sp, safe_bus_drive_alu, safe_bus_drive_reg);
 $display("[CTRL EN] c_co=%b c_so=%b c_eo=%b c_rfo=%b", 
   c_co, c_so, c_eo, c_rfo);
+
   if (state == STATE_SET_REG) begin
   $display("[SET_REG] Writing 0x%0h to reg[%0d] from bus=0x%0h",
            bus, sel_in, bus);
+
+  $display("[IMM DEBUG] imm_out = 0x%0h, bus_drive_imm = %b", imm_out, bus_drive_imm);
+   
 end
-
-
+  $display("[RESET] time=%0t reset=%b state(before)=%0h", $time, reset, state);
+  $display("[BUS DRV] c_co=%b c_so=%b c_eo=%b c_rfo=%b => bus=%0h", 
+            c_co, c_so, c_eo, c_rfo, bus);
+                $display("[STATE_CHANGE] %0t, %0h", $time, state);
+$display("[CPU DATA] IR = %h, bus = %h, c_ii = %b", regi_out, bus, c_ii);
 end
 
 endmodule

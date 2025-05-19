@@ -1,36 +1,35 @@
-module test;
-
-  // Clock and reset signals
+// ==========================
+// Counter Testbench
+// ==========================
+module counter_tb;
   logic clk = 0;
-  logic reset = 0;
+  logic reset = 1;
+  logic [7:0] out;
 
-  // Counter output
-  logic [7:0] value;
-
-  // Generate clock: toggles every 5 time units
+  // Clock
   always #5 clk = ~clk;
 
-  // Generate reset pulses
-  initial begin
-    #17 reset = 1;
-    #11 reset = 0;
-    #29 reset = 1;
-    #11 reset = 0;
-    #100 $stop;
-  end
-
-  // DUT: instantiate the counter
+  // Instantiate
   counter c1 (
-    .value(value),
-    .clk  (clk),
-    .reset(reset)
+    .clk    (clk),
+    .in     (8'h00),   // initial value
+    .sel_in (reset),   // reset load
+    .reset  (reset),
+    .down   (1'b0),
+    .out    (out)
   );
 
-  // Monitor output
+  // Release reset after one clock
   initial begin
-    $monitor("At time %0t: VALUE = 0x%0h (%0d)", $time, value, value);
+    #12 reset = 0;
   end
-initial begin
-  #5000 $display("Simulation timed out!"); $finish;
-end
+
+  // Stimulus: let it count
+  initial begin
+    #100 $finish;
+  end
+
+  initial begin
+    $monitor("At time %0t: COUNT = %0h (%0d)", $time, out, out);
+  end
 endmodule

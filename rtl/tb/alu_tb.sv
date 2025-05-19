@@ -1,38 +1,43 @@
-module alu_tb;
+// ==========================
+// ALU Testbench
+// ==========================
+module register_tb;
 
   // Inputs
-  logic [7:0] in_a;
-  logic [7:0] in_b;
-  logic       cin = 0;
+  logic [7:0] in = 8'd15;
+  logic       reset = 0;
+  logic       enable = 1;
+  logic       clk = 0;
 
-  // Outputs
-  logic [7:0] sum;
-  logic       cout;
+  // Output
+  logic [7:0] value;
 
-  // DUT instantiation
-  alu dut (
-    .cin (cin),
-    .cout(cout),
-    .in_a(in_a),
-    .in_b(in_b),
-    .sum (sum)
+  // Clock generation: toggle every 5 time units
+  always #5 clk = ~clk;
+
+  // Instantiate the DUT (register)
+  register r1 (
+    .in(in),
+    .clk(clk),
+    .enable(enable),
+    .reset(reset),
+    .out(value)
   );
 
   // Stimulus
   initial begin
-    $display("Starting ALU Testbench...");
-
-    #10 in_a = 8'd10; in_b = 8'd20;
-    #10 in_a = 8'd50; in_b = 8'd10;
-    #10 in_a = 8'd100; in_b = 8'd155;
-    #10 in_a = 8'd255; in_b = 8'd1;
-    #10 $finish;
+    #17 reset = 1;
+    #10 in = 8'd10;
+    #10 enable = 0;
+    #10 in = 8'd5;
+    #10 enable = 1;
+    #100 $stop;
   end
 
   // Output monitor
   initial begin
-    $monitor("time=%0t | CIN=%0b COUT=%0b | A=%0d B=%0d → SUM=%0d", 
-              $time, cin, cout, in_a, in_b, sum);
+    $monitor("At time %0t: VALUE = 0x%0h (%0d), ENABLE = %b",
+              $time, value, value, enable);
   end
 initial begin
   #5000 $display("Simulation timed out!"); $finish;
