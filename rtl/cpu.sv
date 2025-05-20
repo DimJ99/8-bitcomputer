@@ -48,7 +48,9 @@ module cpu (
     STATE_SET_ADDR   = 8'h11,
     STATE_IN         = 8'h12,
     STATE_REG_STORE  = 8'h13,
-    STATE_SET_REG    = 8'h14;
+    STATE_SET_REG    = 8'h14,
+    STATE_LOAD_IMM = 8'h15;
+
 
   localparam [2:0]
     ALU_ADD = 3'b000,
@@ -225,7 +227,8 @@ assign bus_drive_sp = c_so;          // stack pointer out
 assign bus_from_alu = alu_out;
 assign bus_drive_alu = c_eo_alu;         // ALU out
 logic c_eo_imm;
-assign c_eo_imm = (state == STATE_SET_REG);
+assign c_eo_imm = (state == STATE_LOAD_IMM);
+
 assign c_eo = c_eo_alu || c_eo_imm;
 
 assign bus_from_reg = regs_out;
@@ -249,8 +252,8 @@ assign bus = safe_bus_drive_pc   ? bus_from_pc   :
              safe_bus_drive_reg  ? bus_from_reg  :
              safe_bus_drive_imm  ? bus_from_imm  :
              8'hZZ;
-
 assign c_ie = (state == STATE_SET_REG && opcode == OP_LDI);
+
 
 
   // ─────────────────────────────────────────────────────────────
@@ -307,7 +310,6 @@ assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
                state == STATE_SET_ADDR ||
                (state == STATE_MOV_FETCH && mov_memory));
 
-assign c_eo = (state == STATE_ALU_OUT || state == STATE_SET_REG);
 
   assign c_halt = (state == STATE_HALT);
   assign c_ii   = (state == STATE_FETCH_INST);
@@ -396,6 +398,9 @@ end
             c_co, c_so, c_eo, c_rfo, bus);
                 $display("[STATE_CHANGE] %0t, %0h", $time, state);
 $display("[CPU DATA] IR = %h, bus = %h, c_ii = %b", regi_out, bus, c_ii);
+  if (c_ie) $display("[IMM REG DEBUG] bus=%h -> imm_out=%h", bus, imm_out);
+end
+
 end
 
 endmodule
