@@ -49,8 +49,8 @@ module cpu (
     STATE_IN         = 8'h12,
     STATE_REG_STORE  = 8'h13,
     STATE_SET_REG    = 8'h14,
-    STATE_LOAD_IMM = 8'h15;
-
+    STATE_LOAD_IMM = 8'h15,
+    STATE_WAIT_FOR_RAM = 8'h16;
 
   localparam [2:0]
     ALU_ADD = 3'b000,
@@ -205,7 +205,7 @@ logic       c_ie;
 
 register m_imm (
   .in     (bus),
-  .clk    (clk),
+  .clk    (internal_clk),
   .enable (c_ie),
   .reset  (reset),
   .out    (imm_out)
@@ -252,7 +252,8 @@ assign bus = safe_bus_drive_pc   ? bus_from_pc   :
              safe_bus_drive_reg  ? bus_from_reg  :
              safe_bus_drive_imm  ? bus_from_imm  :
              8'hZZ;
-assign c_ie = (state == STATE_SET_REG && opcode == OP_LDI);
+assign c_ie = (state == STATE_LOAD_IMM && opcode == OP_LDI);
+
 
 
 
@@ -297,7 +298,7 @@ end
                    (opcode == OP_PUSH || opcode == OP_MOV) ? operand2 :
                    (opcode == OP_CALL)                   ? REG_T   : 'x;
 
-  assign c_rfi = (state == STATE_ALU_OUT || state == STATE_IN ||
+  assign c_rfi = (state == STATE_LOAD_IMM) ||(state == STATE_ALU_OUT || state == STATE_IN ||
                   state == STATE_SET_ADDR || state == STATE_SET_REG ||
                   (state == STATE_MOV_STORE && operand1 != 3'b111));
 
@@ -321,12 +322,14 @@ assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
                  state == STATE_SET_ADDR ||
                  ((state == STATE_MOV_FETCH || state == STATE_MOV_LOAD) && mov_memory));
 
-  assign c_ro = (state == STATE_FETCH_INST ||
-                 (state == STATE_JUMP && jump_allowed) ||
-                 state == STATE_RET || state == STATE_SET_ADDR ||
-                 state == STATE_SET_REG ||
-                 (state == STATE_MOV_LOAD && mov_memory) ||
-                 (state == STATE_MOV_STORE && operand2 == 3'b111));
+assign c_ro = (state == STATE_FETCH_INST ||
+               (state == STATE_JUMP && jump_allowed) ||
+               state == STATE_RET || state == STATE_SET_ADDR ||
+               state == STATE_SET_REG ||
+               (state == STATE_MOV_LOAD && mov_memory) ||
+               (state == STATE_MOV_STORE && operand2 == 3'b111) ||
+               state == STATE_LOAD_IMM); 
+
 
   assign c_ri = ((state == STATE_MOV_STORE && operand1 == 3'b111) ||
                  state == STATE_REG_STORE ||
@@ -399,8 +402,6 @@ end
                 $display("[STATE_CHANGE] %0t, %0h", $time, state);
 $display("[CPU DATA] IR = %h, bus = %h, c_ii = %b", regi_out, bus, c_ii);
   if (c_ie) $display("[IMM REG DEBUG] bus=%h -> imm_out=%h", bus, imm_out);
-end
-
 end
 
 endmodule
