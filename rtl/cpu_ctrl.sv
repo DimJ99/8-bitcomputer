@@ -25,7 +25,7 @@ module cpu_ctrl (
   localparam [7:0]
     STATE_NEXT          = 8'h00,
     STATE_FETCH_PC      = 8'h01,
-    STATE_WAIT_FOR_RAM  = 8'h16, // NEW state
+    STATE_WAIT_FOR_RAM  = 8'h16,
     STATE_FETCH_INST    = 8'h02,
     STATE_HALT          = 8'h03,
     STATE_JUMP          = 8'h04,
@@ -44,7 +44,8 @@ module cpu_ctrl (
     STATE_IN            = 8'h12,
     STATE_REG_STORE     = 8'h13,
     STATE_SET_REG       = 8'h14,
-    STATE_LOAD_IMM      = 8'h15;
+    STATE_LOAD_IMM      = 8'h15,
+    STATE_ALU_WRITEBACK = 8'h17;
 
   logic [7:0] instruction_reg;
   logic [7:0] latched_opcode;
@@ -63,7 +64,7 @@ module cpu_ctrl (
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
       instruction_reg <= 8'h00;
-    else if (cycle == 2)
+    else if (cycle == 4)
       instruction_reg <= instruction;
   end
 
@@ -71,7 +72,7 @@ module cpu_ctrl (
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
       latched_opcode <= 8'h00;
-    else if (cycle == 3) begin
+    else if (cycle == 5) begin
       casez (instruction_reg)
         8'b00_000_000: latched_opcode <= OP_NOP;
         8'b00_000_001: latched_opcode <= OP_CALL;
@@ -97,15 +98,17 @@ module cpu_ctrl (
       state <= STATE_FETCH_PC;
     end else if (state == STATE_HALT) begin
       state <= STATE_HALT;
+    end else if (state == STATE_ALU_WRITEBACK) begin
+      state <= STATE_FETCH_PC;
     end else begin
       case (cycle)
         4'd0: state <= STATE_FETCH_PC;
-        4'd1: state <= STATE_WAIT_FOR_RAM;  // NEW wait state inserted
-        4'd2: state <= STATE_FETCH_INST;
-        4'd3: state <= STATE_NEXT;
+        4'd1: state <= STATE_WAIT_FOR_RAM;
+        4'd2: state <= STATE_WAIT_FOR_RAM;
+        4'd3: state <= STATE_FETCH_INST;
         4'd4: state <= STATE_NEXT;
-
-        4'd5: state <= (latched_opcode == OP_HLT)                             ? STATE_HALT      :
+        4'd5: state <= STATE_NEXT;
+        4'd6: state <= (latched_opcode == OP_HLT)                             ? STATE_HALT      :
                        (latched_opcode == OP_MOV)                             ? STATE_MOV_FETCH :
                        (latched_opcode == OP_ALU || latched_opcode == OP_CMP) ? STATE_ALU_EXEC  :
                        (latched_opcode == OP_RET || latched_opcode == OP_POP) ? STATE_INC_SP    :
@@ -115,32 +118,23 @@ module cpu_ctrl (
                         latched_opcode == OP_JMP)                             ? STATE_FETCH_PC  :
                                                                                 STATE_NEXT;
 
-        4'd6: state <= (latched_opcode == OP_JMP)   ? STATE_JUMP        :
-                       (latched_opcode == OP_LDI)   ? STATE_NEXT        :
-                       (latched_opcode == OP_MOV)   ? STATE_MOV_LOAD    :
-                       (latched_opcode == OP_ALU)   ? STATE_ALU_OUT     :
+        4'd7: state <= (latched_opcode == OP_JMP)        ? STATE_JUMP        :
+                       (latched_opcode == OP_LDI)        ? STATE_NEXT        :
+                       (latched_opcode == OP_MOV)        ? STATE_MOV_LOAD    :
+                       (latched_opcode == OP_ALU)        ? STATE_ALU_WRITEBACK :
                        (latched_opcode == OP_OUT ||
-                        latched_opcode == OP_IN)    ? STATE_SET_ADDR    :
-                       (latched_opcode == OP_PUSH)  ? STATE_REG_STORE   :
-                       (latched_opcode == OP_CALL)  ? STATE_SET_REG     :
+                        latched_opcode == OP_IN)         ? STATE_SET_ADDR    :
+                       (latched_opcode == OP_PUSH)       ? STATE_REG_STORE   :
+                       (latched_opcode == OP_CALL)       ? STATE_SET_REG     :
                        (latched_opcode == OP_RET ||
-                        latched_opcode == OP_POP)   ? STATE_FETCH_SP    :
-                                                      STATE_NEXT;
-
-        4'd7: state <= (latched_opcode == OP_LDI)   ? STATE_LOAD_IMM    :
-                       (latched_opcode == OP_MOV)   ? STATE_MOV_STORE   :
-                       (latched_opcode == OP_CALL)  ? STATE_FETCH_SP    :
-                       (latched_opcode == OP_RET)   ? STATE_RET         :
-                       (latched_opcode == OP_OUT)   ? STATE_OUT         :
-                       (latched_opcode == OP_POP)   ? STATE_SET_REG     :
-                       (latched_opcode == OP_IN)    ? STATE_IN          :
-                                                      STATE_NEXT;
+                        latched_opcode == OP_POP)        ? STATE_FETCH_SP    :
+                                                           STATE_NEXT;
 
         default: state <= STATE_NEXT;
       endcase
     end
 
-    // Debug
+    // Debug Output
     $display("[CTRL FSM] Cycle=%0d | instruction = %h", cycle, instruction);
     $display("[CTRL FSM] instruction_reg = %h | latched_opcode = %h", instruction_reg, latched_opcode);
     $display("[CTRL FSM] state = %h", state);

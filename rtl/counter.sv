@@ -4,9 +4,10 @@ module counter(
   input  logic              sel_in,
   input  logic              reset,
   input  logic              down,
+  input  logic              enable,
+
   output logic [7:0] out
 );
-  input logic enable;
 
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
@@ -15,9 +16,9 @@ module counter(
       out <= in;
     end else if (down) begin
       out <= out - 1;
-    end else begin
-      out <= out + 1;
-    end
+     end else if (enable) begin       // only increment when enabled
+     out <= out + 1;
+  end
   end
 
 endmodule

@@ -41,6 +41,6 @@ module machine_tb;
     $stop;
   end
 initial begin
-  #5000 $display("Simulation timed out!"); $finish;
+  #2000 $display("Simulation timed out!"); $finish;
 end
 endmodule

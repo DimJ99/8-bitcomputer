@@ -50,7 +50,8 @@ module cpu (
     STATE_REG_STORE  = 8'h13,
     STATE_SET_REG    = 8'h14,
     STATE_LOAD_IMM = 8'h15,
-    STATE_WAIT_FOR_RAM = 8'h16;
+    STATE_WAIT_FOR_RAM = 8'h16,
+    STATE_ALU_WRITEBACK = 8'h17;
 
   localparam [2:0]
     ALU_ADD = 3'b000,
@@ -154,7 +155,8 @@ module cpu (
   logic       c_co, c_ci, c_j;
 
   counter m_pc (
-    .clk    (c_ci & internal_clk),
+    .clk    (internal_clk),    // now a normal clock
+    .enable(c_ci),            // only step on your fetch-cycle pulse
     .in     (bus),
     .sel_in (c_j),
     .reset  (reset),
@@ -196,7 +198,8 @@ module cpu (
     .flag_carry (flag_carry)
   );
 
-  assign c_eo_alu = (state == STATE_ALU_OUT);
+  assign c_eo_alu = (state == STATE_ALU_OUT || state == STATE_ALU_WRITEBACK);
+
 // ─────────────────────────────────────────────────────────────
 //  Immediate value register for LDI
 // ─────────────────────────────────────────────────────────────
@@ -228,7 +231,7 @@ assign bus_from_alu = alu_out;
 assign bus_drive_alu = c_eo_alu;         // ALU out
 logic c_eo_imm;
 assign c_eo_imm = (state == STATE_LOAD_IMM);
-
+logic c_eo;
 assign c_eo = c_eo_alu || c_eo_imm;
 
 assign bus_from_reg = regs_out;
@@ -297,10 +300,15 @@ end
   assign sel_out = (opcode == OP_OUT)                    ? REG_A   :
                    (opcode == OP_PUSH || opcode == OP_MOV) ? operand2 :
                    (opcode == OP_CALL)                   ? REG_T   : 'x;
+assign c_rfi = (state == STATE_LOAD_IMM) ||
+               (state == STATE_ALU_OUT) ||
+               (state == STATE_IN) ||
+               (state == STATE_SET_ADDR) ||
+               (state == STATE_SET_REG) ||
+               (state == STATE_ALU_WRITEBACK) ||
+               ((state == STATE_MOV_STORE) && (operand1 != 3'b111));
 
-  assign c_rfi = (state == STATE_LOAD_IMM) ||(state == STATE_ALU_OUT || state == STATE_IN ||
-                  state == STATE_SET_ADDR || state == STATE_SET_REG ||
-                  (state == STATE_MOV_STORE && operand1 != 3'b111));
+
 
   assign c_ci = (state == STATE_FETCH_PC || state == STATE_RET ||
                  (state == STATE_JUMP && jump_allowed) ||
@@ -340,8 +348,6 @@ assign c_ro = (state == STATE_FETCH_INST ||
   assign c_si = (state == STATE_TMP_JUMP || state == STATE_REG_STORE || state == STATE_INC_SP);
   assign c_ee = (state == STATE_ALU_EXEC);
 
-
-
   // Instantiate control FSM
   cpu_ctrl m_ctrl (
     .instruction (regi_out),
@@ -353,7 +359,7 @@ assign c_ro = (state == STATE_FETCH_INST ||
   );
 
   // Halt flip‑flop
-  
+
   always_ff @(posedge c_halt) halted <= 1;
   always_ff @(posedge clk) begin
   if (state == STATE_FETCH_INST) begin
@@ -388,6 +394,7 @@ $display("[BUS EN] PC:%b SP:%b ALU:%b REG:%b",
   safe_bus_drive_pc, safe_bus_drive_sp, safe_bus_drive_alu, safe_bus_drive_reg);
 $display("[CTRL EN] c_co=%b c_so=%b c_eo=%b c_rfo=%b", 
   c_co, c_so, c_eo, c_rfo);
+$display("[ALU WRITEBACK] Writing ALU result to R%0d", operand1);
 
   if (state == STATE_SET_REG) begin
   $display("[SET_REG] Writing 0x%0h to reg[%0d] from bus=0x%0h",
@@ -402,6 +409,9 @@ end
                 $display("[STATE_CHANGE] %0t, %0h", $time, state);
 $display("[CPU DATA] IR = %h, bus = %h, c_ii = %b", regi_out, bus, c_ii);
   if (c_ie) $display("[IMM REG DEBUG] bus=%h -> imm_out=%h", bus, imm_out);
+  if (state == STATE_ALU_WRITEBACK) begin
+  $display("[ALU EXEC] rega=%h, regb=%h, op=%b", rega_out, regb_out, alu_op);
+end
 end
 
 endmodule
