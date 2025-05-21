@@ -25,7 +25,11 @@ module cpu_reg (
       registers[sel_in] <= data_in;
     end
   end
-
+always_ff @(posedge clk) begin
+  if (enable_write) begin
+    $display("[REG WRITE] Register[%0d] <= %0h (from bus %0h)", sel_in, data_in, data_in);
+  end
+end
   // Robust output handling
   assign data_out = output_enable ? registers[sel_out] : 8'hZZ;
 
