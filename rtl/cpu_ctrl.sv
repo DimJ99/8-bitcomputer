@@ -25,6 +25,7 @@ module cpu_ctrl (
     OP_POP   = 8'b00_101_000,
     OP_ALU   = 8'b01_000_000,
     OP_MOV   = 8'b10_000_000;
+    
 
   // ─── States ──────────────────────────────────────────────
   localparam [7:0]
@@ -52,7 +53,8 @@ module cpu_ctrl (
     STATE_LOAD_IMM      = 8'h15,
     STATE_ALU_WRITEBACK = 8'h17,
     STATE_REG_READ      = 8'h18,
-    STATE_FETCH_IMM     = 8'h19;
+    STATE_FETCH_IMM     = 8'h19,
+    STATE_MOV_MEM_ADDR = 8'h1C;
 
   logic [7:0] instruction_reg;
   logic [7:0] latched_opcode;

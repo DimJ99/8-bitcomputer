@@ -38,9 +38,11 @@ module machine_tb;
       m_machine.m_cpu.m_registers.regg,
       m_machine.m_cpu.m_registers.regt
     );
+  $display("MEM[0x00] = %h", m_machine.m_ram.mem[8'd00]);
+
     $stop;
   end
 initial begin
-  #10000 $display("Simulation timed out!"); $finish;
+  #100000 $display("Simulation timed out!"); $finish;
 end
 endmodule

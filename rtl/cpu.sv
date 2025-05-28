@@ -140,13 +140,14 @@
     //  Memory‑address  
     // ─────────────────────────────────────────────────────────────
     logic c_mi;
-    register m_mar (
-      .in    (bus),
-      .clk   (internal_clk),
-      .enable(c_mi),
-      .reset (reset),
-      .out   (addr_bus)
-    );
+ register m_mar (
+  .in    ((state == STATE_OUT && opcode == OP_OUT) ? 8'h00 : bus),
+  .clk   (internal_clk),
+  .enable(c_mi),
+  .reset (reset),
+  .out   (addr_bus)
+);
+
 
     // ─────────────────────────────────────────────────────────────
     //  Program counter
@@ -315,8 +316,7 @@ assign operand2 = regi_out[2:0];
 
 
     assign c_halt = (state == STATE_HALT);
-  assign c_ii = (state == STATE_FETCH_INST && bus_ready);
-
+    assign c_ii   = (state == STATE_FETCH_INST);
     assign c_j    = ((state == STATE_JUMP && jump_allowed) ||
                     state == STATE_RET ||
                     state == STATE_TMP_JUMP);
