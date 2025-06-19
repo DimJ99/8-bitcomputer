@@ -64,14 +64,21 @@ module cpu_ctrl (
   logic [7:0] latched_opcode;
 
   // ─── Cycle Counter ───────────────────────────────────────
-  initial cycle = 0;
-  always_ff @(posedge clk or posedge reset_cycle) begin
-    if (reset_cycle)
-      cycle <= 0;
-    else
-      cycle <= (cycle == 7) ? 0 : cycle + 1;
-  end
+wire instruction_complete = (state == STATE_ALU_WRITEBACK) ||
+                           (state == STATE_PC_STORE) ||
+                           (state == STATE_SET_REG) ||
+                           (state == STATE_LOAD_IMM) ||
+                           (state == STATE_REG_STORE) ||
+                           (state == STATE_MOV_STORE);
 
+always_ff @(posedge clk or posedge reset_cycle) begin
+    if (reset_cycle)
+        cycle <= 0;
+    else if (instruction_complete)
+        cycle <= 0;
+    else
+        cycle <= cycle + 1;
+end
   // ─── Latch Instruction ───────────────────────────────────
 always_ff @(posedge clk or posedge reset_cycle) begin
   if (reset_cycle) begin
@@ -85,7 +92,7 @@ end
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
       latched_opcode <= 8'h00;
-    else if (cycle == 5) begin
+    else if (state == STATE_FETCH_INST && bus_ready) begin
       casez (instruction_reg)
         8'b00_000_000: latched_opcode <= OP_NOP;
         8'b00_000_001: latched_opcode <= OP_CALL;
@@ -121,8 +128,8 @@ end
       state <= STATE_FETCH_PC;
 
     // Existing ALU & memory operations
-    end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state == STATE_SET_REG ||
-                 state == STATE_LOAD_IMM || state == STATE_REG_STORE) begin
+end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state == STATE_SET_REG ||
+             state == STATE_REG_STORE) begin
       state <= STATE_FETCH_PC;
 
     end else if (state == STATE_WAIT_FOR_RAM && !bus_ready) begin
@@ -187,7 +194,7 @@ end
     c_rfi = 0;
     c_rfo = 0;
 // PC increments on FETCH_PC or LOAD_IMM
-pc_inc  = (state == STATE_FETCH_PC) || (state == STATE_LOAD_IMM);
+pc_inc = (state == STATE_FETCH_INST) || (state == STATE_LOAD_IMM);
 
 // PC loads (sync) on JUMP/CALL/RET
 pc_load = (state == STATE_JUMP    && jump_allowed)
