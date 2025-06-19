@@ -7,7 +7,11 @@ module cpu_ctrl (
     input  logic       bus_ready,
     output logic [7:0] opcode,
     output logic       c_rfi,
-    output logic       c_rfo  // Added c_rfo for register file output enable
+    output logic       c_rfo,
+    output logic       pc_inc,    // counter.inc  
+    output logic       pc_load,   // counter.load 
+    output logic       pc_dec,     // counter.dec  
+    input  logic       jump_allowed
 );
 
   // ─── Opcodes ─────────────────────────────────────────────
@@ -182,6 +186,18 @@ end
   always_comb begin
     c_rfi = 0;
     c_rfo = 0;
+// PC increments on FETCH_PC or LOAD_IMM
+pc_inc  = (state == STATE_FETCH_PC) || (state == STATE_LOAD_IMM);
+
+// PC loads (sync) on JUMP/CALL/RET
+pc_load = (state == STATE_JUMP    && jump_allowed)
+        || (state == STATE_PC_STORE)
+        || (state == STATE_RET)
+        || (state == STATE_TMP_JUMP);
+
+// PC decrements on RET/POP semantics
+pc_dec  = (state == STATE_RET)
+        || (state == STATE_FETCH_SP);
     case (state)
       STATE_ALU_WRITEBACK: c_rfi = 1;
       STATE_LOAD_IMM:      c_rfi = 1;

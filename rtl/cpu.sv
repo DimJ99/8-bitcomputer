@@ -9,6 +9,12 @@
     inout  tri   [7:0] bus
   );
 
+// near the top of cpu.sv, alongside c_ri/c_ro etc.
+logic        pc_enable;   // maps to counter.inc
+logic        pc_load;     // maps to counter.load
+logic        pc_dec;      // maps to counter.dec
+// also make sure you’ve declared:
+logic        c_rfi, c_rfo;
 
     // ─────────────────────────────────────────────────────────────
     //  Opcode, state, ALU‑mode, jump‑condition, and register codes
@@ -155,15 +161,15 @@
     logic [7:0] pc_out;
     logic       c_co, c_ci, c_j;
 
-    counter m_pc (
-      .clk    (internal_clk),    // now a normal clock
-      .enable(c_ci),            // only step on your fetch-cycle pulse
-      .in     (bus),
-      .sel_in (c_j),
-      .reset  (reset),
-      .down   (1'b0),
-      .out    (pc_out)
-    );
+ counter m_pc (
+  .clk        (internal_clk),
+  .reset      (reset),
+  .load_value (bus),         // when load==1, PC ← bus
+  .load       (pc_load),     // assert in JMP/CALL/RET states
+  .inc        (pc_inc),   // assert in FETCH_PC & LOAD_IMM
+  .dec        (pc_dec),      // assert on RET/POP
+  .out        (pc_out)
+);
 
     // ─────────────────────────────────────────────────────────────
     //  Stack pointer
@@ -171,14 +177,16 @@
     logic [7:0] sp_out;
     logic       c_si, c_sd, c_so;
 
-    counter m_sp (
-      .clk    (reset | (c_si & internal_clk)),
-      .in     (8'hFF),
-      .sel_in (reset),
-      .reset  (1'b0),
-      .down   (c_sd),
-      .out    (sp_out)
-    );
+counter m_sp (
+  .clk        (internal_clk),
+  .reset      (1'b0),       // SP never asynchronously resets here
+  .load_value (8'hFF),      // initial SP on reset
+  .load       (reset),      // sync load on reset
+  .inc        (c_si),
+  .dec        (c_sd),
+  .out        (sp_out)
+);
+
 
     // ─────────────────────────────────────────────────────────────
     //  ALU 
@@ -302,12 +310,14 @@ assign operand2 = regi_out[2:0];
                     (opcode == OP_CALL)                   ? REG_T   : 'x;
 
 
+   assign c_ci = ((state == STATE_FETCH_PC   && bus_ready) ||
+                  (state == STATE_FETCH_IMM  && bus_ready) ||    
+                  (state == STATE_RET        && bus_ready) ||
+                  (state == STATE_JUMP       && jump_allowed && bus_ready) ||
+                  (state == STATE_TMP_JUMP   && bus_ready) ||
+                  (state == STATE_MOV_FETCH  && mov_memory && bus_ready));
 
-  assign c_ci = ((state == STATE_FETCH_PC && bus_ready) ||
-                (state == STATE_RET && bus_ready) ||
-                (state == STATE_JUMP && jump_allowed && bus_ready) ||
-                (state == STATE_TMP_JUMP && bus_ready) ||
-                (state == STATE_MOV_FETCH && mov_memory && bus_ready));
+
 
 
   assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
@@ -356,7 +366,11 @@ cpu_ctrl m_ctrl (
   .bus_ready(bus_ready),
   .opcode(opcode),
   .c_rfi(c_rfi),   // <-- This is the key new connection
-  .c_rfo(c_rfo)
+  .c_rfo(c_rfo),
+  .pc_inc       (pc_inc),
+  .pc_load      (pc_load),
+  .jump_allowed(jump_allowed) ,
+  .pc_dec       (pc_dec)
 );
 
     // Halt flip‑flop
