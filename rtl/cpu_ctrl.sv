@@ -62,29 +62,27 @@ module cpu_ctrl (
 
   logic [7:0] instruction_reg;
   logic [7:0] latched_opcode;
+  logic [7:0] immediate_value;  // Store the fetched immediate value
 
   // ─── Cycle Counter ───────────────────────────────────────
-wire instruction_complete = (state == STATE_ALU_WRITEBACK) ||
-                           (state == STATE_PC_STORE) ||
-                           (state == STATE_SET_REG) ||
-                           (state == STATE_LOAD_IMM) ||
-                           (state == STATE_REG_STORE) ||
-                           (state == STATE_MOV_STORE);
-
-always_ff @(posedge clk or posedge reset_cycle) begin
+  initial cycle = 0;
+  always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
-        cycle <= 0;
-    else if (instruction_complete)
-        cycle <= 0;
+      cycle <= 0;
     else
-        cycle <= cycle + 1;
-end
+      cycle <= (cycle == 7) ? 0 : cycle + 1;
+  end
+
   // ─── Latch Instruction ───────────────────────────────────
 always_ff @(posedge clk or posedge reset_cycle) begin
   if (reset_cycle) begin
     instruction_reg <= 8'h00;
+    immediate_value <= 8'h00;
   end else if (state == STATE_FETCH_INST && bus_ready) begin
     instruction_reg <= instruction;
+  end else if (state == STATE_FETCH_IMM && bus_ready) begin
+    // Latch the immediate value, don't treat it as an instruction
+    immediate_value <= instruction;
   end
 end
 
@@ -92,7 +90,8 @@ end
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
       latched_opcode <= 8'h00;
-    else if (state == STATE_FETCH_INST && bus_ready) begin
+    // Only decode opcodes when we've fetched an actual instruction, not immediate data
+    else if (cycle == 5 && state == STATE_NEXT) begin
       casez (instruction_reg)
         8'b00_000_000: latched_opcode <= OP_NOP;
         8'b00_000_001: latched_opcode <= OP_CALL;
@@ -127,9 +126,16 @@ end
     end else if (state == STATE_MOV_STORE) begin
       state <= STATE_FETCH_PC;
 
+    // Handle FETCH_IMM state - wait for bus ready, then proceed to LOAD_IMM
+    end else if (state == STATE_FETCH_IMM) begin
+      if (bus_ready)
+        state <= STATE_LOAD_IMM;
+      else
+        state <= STATE_FETCH_IMM;  // Wait for bus
+
     // Existing ALU & memory operations
-end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state == STATE_SET_REG ||
-             state == STATE_REG_STORE) begin
+    end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state == STATE_SET_REG ||
+                 state == STATE_LOAD_IMM || state == STATE_REG_STORE) begin
       state <= STATE_FETCH_PC;
 
     end else if (state == STATE_WAIT_FOR_RAM && !bus_ready) begin
@@ -193,8 +199,9 @@ end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state ==
   always_comb begin
     c_rfi = 0;
     c_rfo = 0;
-// PC increments on FETCH_PC or LOAD_IMM
-pc_inc = (state == STATE_FETCH_INST) || (state == STATE_LOAD_IMM);
+
+// PC increments on FETCH_PC or LOAD_IMM (restore original logic)
+pc_inc  = (state == STATE_FETCH_PC);
 
 // PC loads (sync) on JUMP/CALL/RET
 pc_load = (state == STATE_JUMP    && jump_allowed)
@@ -205,9 +212,14 @@ pc_load = (state == STATE_JUMP    && jump_allowed)
 // PC decrements on RET/POP semantics
 pc_dec  = (state == STATE_RET)
         || (state == STATE_FETCH_SP);
+        
     case (state)
       STATE_ALU_WRITEBACK: c_rfi = 1;
-      STATE_LOAD_IMM:      c_rfi = 1;
+    STATE_LOAD_IMM: begin
+      // only load an immediate when the latched opcode is LDI
+      if (latched_opcode == OP_LDI)
+        c_rfi = 1;
+    end
       STATE_IN:            c_rfi = 1;
       STATE_SET_ADDR:      c_rfi = 1;
       STATE_SET_REG:       c_rfi = 1;

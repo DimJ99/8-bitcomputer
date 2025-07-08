@@ -319,10 +319,10 @@ assign operand2 = regi_out[2:0];
 
 
 
-
-  assign c_co = (state == STATE_FETCH_PC || state == STATE_PC_STORE ||
-                state == STATE_SET_ADDR ||
-                (state == STATE_MOV_FETCH && mov_memory));
+ assign c_co = (state == STATE_FETCH_PC)
+             || (state == STATE_FETCH_IMM)
+             || (state == STATE_PC_STORE)
+           || (state == STATE_MOV_FETCH && mov_memory);
 
 
     assign c_halt = (state == STATE_HALT);
@@ -331,10 +331,9 @@ assign operand2 = regi_out[2:0];
                     state == STATE_RET ||
                     state == STATE_TMP_JUMP);
 
-    assign c_mi = (state == STATE_FETCH_PC || state == STATE_FETCH_SP ||
-                  state == STATE_SET_ADDR ||
-                  ((state == STATE_MOV_FETCH || state == STATE_MOV_LOAD) && mov_memory)|| state == STATE_FETCH_IMM);
-
+assign c_mi = (state == STATE_FETCH_PC)
+            || (state == STATE_FETCH_SP)       // genuine memory ops (push/pop)
+            || (state == STATE_MOV_FETCH && mov_memory);
   assign c_ro = (state == STATE_FETCH_INST ||
                 (state == STATE_JUMP && jump_allowed) ||
                 state == STATE_RET || state == STATE_SET_ADDR ||
@@ -342,7 +341,7 @@ assign operand2 = regi_out[2:0];
                 (state == STATE_MOV_LOAD && mov_memory) ||
                 (state == STATE_MOV_STORE && operand2 == 3'b111) ||
                 state == STATE_LOAD_IMM ||
-                state == STATE_WAIT_FOR_RAM|| state == STATE_FETCH_IMM);  // <--- Add this line
+                state == STATE_WAIT_FOR_RAM|| state == STATE_FETCH_IMM);  
 
 
 
