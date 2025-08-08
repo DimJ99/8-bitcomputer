@@ -10,7 +10,7 @@ module cpu_ctrl (
     output logic       c_rfo,
     output logic       pc_inc,    // counter.inc  
     output logic       pc_load,   // counter.load 
-    output logic       pc_dec,     // counter.dec  
+    output logic       pc_dec,    // counter.dec  
     input  logic       jump_allowed
 );
 
@@ -30,7 +30,6 @@ module cpu_ctrl (
     OP_ALU   = 8'b01_000_000,
     OP_MOV   = 8'b10_000_000;
     
-
   // ─── States ──────────────────────────────────────────────
   localparam [7:0]
     STATE_NEXT          = 8'h00,
@@ -58,93 +57,76 @@ module cpu_ctrl (
     STATE_ALU_WRITEBACK = 8'h17,
     STATE_REG_READ      = 8'h18,
     STATE_FETCH_IMM     = 8'h19,
-    STATE_MOV_MEM_ADDR = 8'h1C;
+    STATE_MOV_MEM_ADDR  = 8'h1C;
 
   logic [7:0] instruction_reg;
   logic [7:0] latched_opcode;
-  logic [7:0] immediate_value;  // Store the fetched immediate value
+  logic [7:0] immediate_value;
+  logic       ldi_in_progress;  // Flag to track LDI execution
 
   // ─── Cycle Counter ───────────────────────────────────────
   initial cycle = 0;
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle)
       cycle <= 0;
-    else
+    else if (!ldi_in_progress)  // Freeze cycle counter during LDI
       cycle <= (cycle == 7) ? 0 : cycle + 1;
   end
 
   // ─── Latch Instruction ───────────────────────────────────
-always_ff @(posedge clk or posedge reset_cycle) begin
-  if (reset_cycle) begin
-    instruction_reg <= 8'h00;
-    immediate_value <= 8'h00;
-  end else if (state == STATE_FETCH_INST && bus_ready) begin
-    instruction_reg <= instruction;
-  end else if (state == STATE_FETCH_IMM && bus_ready) begin
-    // Latch the immediate value, don't treat it as an instruction
-    immediate_value <= instruction;
-  end
-end
-
-  // ─── Decode Opcode ───────────────────────────────────────
   always_ff @(posedge clk or posedge reset_cycle) begin
-    if (reset_cycle)
-      latched_opcode <= 8'h00;
-    // Only decode opcodes when we've fetched an actual instruction, not immediate data
-    else if (cycle == 5 && state == STATE_NEXT) begin
-      casez (instruction_reg)
-        8'b00_000_000: latched_opcode <= OP_NOP;
-        8'b00_000_001: latched_opcode <= OP_CALL;
-        8'b00_000_010: latched_opcode <= OP_RET;
-        8'b00_000_011: latched_opcode <= OP_OUT;
-        8'b00_000_100: latched_opcode <= OP_IN;
-        8'b00_000_101: latched_opcode <= OP_HLT;
-        8'b00_000_110: latched_opcode <= OP_CMP;
-        8'b00_010_???: latched_opcode <= OP_LDI;
-        8'b00_011_???: latched_opcode <= OP_JMP;
-        8'b00_100_???: latched_opcode <= OP_PUSH;
-        8'b00_101_???: latched_opcode <= OP_POP;
-        8'b01_???_???: latched_opcode <= OP_ALU;
-        8'b10_???_???: latched_opcode <= OP_MOV;
-        default:       latched_opcode <= OP_NOP;
-      endcase
+    if (reset_cycle) begin
+      instruction_reg <= 8'h00;
+      immediate_value <= 8'h00;
+      latched_opcode  <= 8'h00;
+    end 
+    // Normal opcode fetch
+    else if (state == STATE_FETCH_INST && bus_ready && !ldi_in_progress) begin
+      instruction_reg <= instruction;
+      latched_opcode  <= instruction;
+      $display("[INST LATCH] New instruction: %h, latched_opcode: %h", instruction, instruction);
+    end 
+    // Immediate fetch for LDI
+    else if (state == STATE_FETCH_IMM && bus_ready) begin
+      immediate_value <= instruction;
+      $display("[IMM LATCH] Immediate value: %h for opcode: %h", instruction, latched_opcode);
     end
   end
 
   // ─── Control FSM ─────────────────────────────────────────
   always_ff @(posedge clk or posedge reset_cycle) begin
     if (reset_cycle) begin
-      state <= STATE_FETCH_PC;
-    end else if (state == STATE_HALT) begin
+      state            <= STATE_FETCH_PC;
+      ldi_in_progress  <= 0;
+    end 
+    else if (state == STATE_HALT) begin
       state <= STATE_HALT;
 
-    // Add MOV instruction progression
-    end else if (state == STATE_MOV_FETCH) begin
-      state <= STATE_MOV_LOAD;
-    end else if (state == STATE_MOV_LOAD) begin
-      state <= STATE_MOV_STORE;
-    end else if (state == STATE_MOV_STORE) begin
-      state <= STATE_FETCH_PC;
+    // LDI states
+    end 
+    else if (state == STATE_FETCH_IMM) begin
+      if (bus_ready) state <= STATE_LOAD_IMM;
+      else           state <= STATE_FETCH_IMM;
+    end 
+    else if (state == STATE_LOAD_IMM) begin
+      state           <= STATE_FETCH_PC;
+      ldi_in_progress <= 0;
+      $display("[LDI FSM] LDI complete, returning to FETCH_PC");
 
-    // Handle FETCH_IMM state - wait for bus ready, then proceed to LOAD_IMM
-    end else if (state == STATE_FETCH_IMM) begin
-      if (bus_ready)
-        state <= STATE_LOAD_IMM;
-      else
-        state <= STATE_FETCH_IMM;  // Wait for bus
+    // Other multi-cycle
+    end 
+    else if (state == STATE_MOV_FETCH)      state <= STATE_MOV_LOAD;
+    else if (state == STATE_MOV_LOAD)       state <= STATE_MOV_STORE;
+    else if (state == STATE_MOV_STORE)      state <= STATE_FETCH_PC;
+    else if (state == STATE_ALU_WRITEBACK)  state <= STATE_FETCH_PC;
+    else if (state == STATE_PC_STORE)       state <= STATE_FETCH_PC;
+    else if (state == STATE_SET_REG)        state <= STATE_FETCH_PC;
+    else if (state == STATE_REG_STORE)      state <= STATE_FETCH_PC;
+    else if (state == STATE_WAIT_FOR_RAM && !bus_ready) state <= STATE_WAIT_FOR_RAM;
+    else if (state == STATE_REG_READ)       state <= STATE_ALU_EXEC;
 
-    // Existing ALU & memory operations
-    end else if (state == STATE_ALU_WRITEBACK || state == STATE_PC_STORE || state == STATE_SET_REG ||
-                 state == STATE_LOAD_IMM || state == STATE_REG_STORE) begin
-      state <= STATE_FETCH_PC;
-
-    end else if (state == STATE_WAIT_FOR_RAM && !bus_ready) begin
-      state <= STATE_WAIT_FOR_RAM;
-    end else if (state == STATE_REG_READ) begin
-      state <= STATE_ALU_EXEC;
-
-    // Instruction cycle-based state transitions
-    end else begin
+    // Normal cycle logic only if NOT in LDI
+    else if (!ldi_in_progress) begin
       case (cycle)
         4'd0: state <= STATE_FETCH_PC;
         4'd1: state <= STATE_WAIT_FOR_RAM;
@@ -152,46 +134,39 @@ end
         4'd3: state <= STATE_FETCH_INST;
         4'd4: state <= STATE_NEXT;
         4'd5: state <= STATE_NEXT;
-        4'd6: state <= (latched_opcode == OP_HLT)                             ? STATE_HALT        :
-                       (latched_opcode == OP_MOV)                             ? STATE_MOV_FETCH   :
-                       (latched_opcode == OP_ALU || latched_opcode == OP_CMP) ? STATE_REG_READ    :
-                       (latched_opcode == OP_RET || latched_opcode == OP_POP) ? STATE_INC_SP      :
-                       (latched_opcode == OP_PUSH)                            ? STATE_FETCH_SP    :
-                       (latched_opcode == OP_CALL)                            ? STATE_SET_REG     :
-                       (latched_opcode == OP_LDI)                             ? STATE_FETCH_IMM   :
-                       (latched_opcode == OP_JMP)                             ? STATE_JUMP        :
-                       (latched_opcode == OP_IN  || latched_opcode == OP_OUT) ? STATE_SET_ADDR    :
-                                                                                STATE_NEXT;
-
-        4'd7: state <= (latched_opcode == OP_LDI)        ? STATE_LOAD_IMM      :
-                      (latched_opcode == OP_ALU)        ? STATE_ALU_WRITEBACK :
-                      (latched_opcode == OP_PUSH)       ? STATE_REG_STORE     :
-                      (latched_opcode == OP_CALL)       ? STATE_PC_STORE      :
-                      (latched_opcode == OP_RET ||
-                       latched_opcode == OP_POP)        ? STATE_FETCH_SP      :
-                      (latched_opcode == OP_JMP)        ? STATE_FETCH_PC      :
-                      (latched_opcode == OP_IN  ||
-                       latched_opcode == OP_OUT)        ? STATE_NEXT          :
-                                                           STATE_NEXT;
-
+        4'd6: begin
+          case (latched_opcode)
+            OP_HLT: state <= STATE_HALT;
+            OP_MOV: state <= STATE_MOV_FETCH;
+            OP_ALU, OP_CMP: state <= STATE_REG_READ;
+            OP_RET, OP_POP: state <= STATE_INC_SP;
+            OP_PUSH: state <= STATE_FETCH_SP;
+            OP_CALL: state <= STATE_SET_REG;
+            OP_LDI: begin
+              state           <= STATE_FETCH_IMM;
+              ldi_in_progress <= 1;
+              $display("[FSM] LDI detected, entering FETCH_IMM");
+            end
+            OP_JMP: state <= STATE_JUMP;
+            OP_IN, OP_OUT: state <= STATE_SET_ADDR;
+            default: state <= STATE_NEXT;
+          endcase
+        end
+        4'd7: begin
+          case (latched_opcode)
+            OP_ALU:  state <= STATE_ALU_WRITEBACK;
+            OP_PUSH: state <= STATE_REG_STORE;
+            OP_CALL: state <= STATE_PC_STORE;
+            OP_RET, OP_POP: state <= STATE_FETCH_SP;
+            OP_JMP:  state <= STATE_FETCH_PC;
+            OP_IN, OP_OUT: state <= STATE_NEXT;
+            default: state <= STATE_NEXT;
+          endcase
+        end
         default: state <= STATE_NEXT;
       endcase
     end
-
-    // Debugging output
-    $display("[CTRL FSM] Cycle=%0d | instruction = %h", cycle, instruction);
-    $display("[CTRL FSM] instruction_reg = %h | latched_opcode = %h", instruction_reg, latched_opcode);
-    $display("[FETCH]  cycle=%0d | IR=%h | latched_opcode=%h", cycle, instruction_reg, latched_opcode);
-    $display("[FSM] transition | cycle=%0d | opcode=%h | state=%h", cycle, latched_opcode, state);
-    if (cycle == 4 && !bus_ready)
-      $display("[WARN] Bus not ready at cycle 4; instruction fetch may be invalid.");
-    $display("[CTRL FSM] state = %h", state);
-    if (cycle == 4) begin
-      $display("[DEBUG] cycle=4, instruction=%h, bus_ready=%b", instruction, bus_ready);
-    end
   end
-
-
 
   assign opcode = latched_opcode;
 
@@ -200,31 +175,26 @@ end
     c_rfi = 0;
     c_rfo = 0;
 
-// PC increments on FETCH_PC or LOAD_IMM (restore original logic)
-pc_inc  = (state == STATE_FETCH_PC);
+    // PC increments on normal fetch, and also for LDI immediate
+    pc_inc = (state == STATE_FETCH_PC) || (state == STATE_FETCH_IMM);
 
-// PC loads (sync) on JUMP/CALL/RET
-pc_load = (state == STATE_JUMP    && jump_allowed)
-        || (state == STATE_PC_STORE)
-        || (state == STATE_RET)
-        || (state == STATE_TMP_JUMP);
+    // PC loads on jumps/calls/returns
+    pc_load = (state == STATE_JUMP && jump_allowed)
+            || (state == STATE_PC_STORE)
+            || (state == STATE_RET)
+            || (state == STATE_TMP_JUMP);
 
-// PC decrements on RET/POP semantics
-pc_dec  = (state == STATE_RET)
-        || (state == STATE_FETCH_SP);
-        
+    // PC decrements for RET/POP
+    pc_dec = (state == STATE_RET) || (state == STATE_FETCH_SP);
+            
     case (state)
       STATE_ALU_WRITEBACK: c_rfi = 1;
-    STATE_LOAD_IMM: begin
-      // only load an immediate when the latched opcode is LDI
-      if (latched_opcode == OP_LDI)
-        c_rfi = 1;
-    end
-      STATE_IN:            c_rfi = 1;
-      STATE_SET_ADDR:      c_rfi = 1;
-      STATE_SET_REG:       c_rfi = 1;
-      STATE_MOV_STORE:     if (instruction[5:3] != 3'b111) c_rfi = 1;
-      STATE_REG_READ:      c_rfo = 1;
+      STATE_LOAD_IMM: if (latched_opcode == OP_LDI) c_rfi = 1;
+      STATE_IN:       c_rfi = 1;
+      STATE_SET_ADDR: c_rfi = 1;
+      STATE_SET_REG:  c_rfi = 1;
+      STATE_MOV_STORE: if (instruction[5:3] != 3'b111) c_rfi = 1;
+      STATE_REG_READ: c_rfo = 1;
       default: begin
         c_rfi = 0;
         c_rfo = 0;

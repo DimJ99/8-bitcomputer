@@ -419,6 +419,7 @@ $display("[CTRL EN] c_rfi=%b c_rfo=%b c_co=%b c_so=%b c_eo=%b",
     $display("[IMM DEBUG] imm_out = 0x%0h, bus_drive_imm = %b", imm_out, bus_drive_imm);
     
   end
+  
     $display("[RESET] time=%0t reset=%b state(before)=%0h", $time, reset, state);
     $display("[BUS DRV] c_co=%b c_so=%b c_eo=%b c_rfo=%b => bus=%0h", 
               c_co, c_so, c_eo, c_rfo, bus);  $display("[CTRL FSM] OUT state = %0h", state);
@@ -444,5 +445,11 @@ always_ff @(posedge clk) begin
     $display("  reg_dst_addr   = %0d", instruction[5:3]);  // if this selects register
     $display("  regfile_we     = %b", c_rfi);             // ensure regfile write enable
   end
+end
+always_ff @(posedge clk) begin
+    if (c_ii) begin
+        $display("[IR DEBUG] Before: regi_out=%h, bus=%h, c_ii=%b", regi_out, bus, c_ii);
+        $display("[IR DEBUG] After next clock, regi_out should be %h", bus);
+    end
 end
   endmodule
