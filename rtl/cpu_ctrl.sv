@@ -1,7 +1,7 @@
 module cpu_ctrl (
     input  logic       clk,
     input  logic       reset_cycle,
-    input  logic [7:0] instruction,
+    input  logic [7:0] instruction,  // IR value (not the immediate byte)
     output logic [7:0] state,
     output logic [3:0] cycle,
     input  logic       bus_ready,
@@ -57,11 +57,11 @@ module cpu_ctrl (
     STATE_ALU_WRITEBACK = 8'h17,
     STATE_REG_READ      = 8'h18,
     STATE_FETCH_IMM     = 8'h19,
+    STATE_WAIT_IMM      = 8'h1A,   // <<< NEW: wait for RAM to drive the immediate
     STATE_MOV_MEM_ADDR  = 8'h1C;
 
   logic [7:0] instruction_reg;
   logic [7:0] latched_opcode;
-  logic [7:0] immediate_value;
   logic       ldi_in_progress;  // Flag to track LDI execution
 
   // ─── Cycle Counter ───────────────────────────────────────
@@ -73,25 +73,30 @@ module cpu_ctrl (
       cycle <= (cycle == 7) ? 0 : cycle + 1;
   end
 
-  // ─── Latch Instruction ───────────────────────────────────
-  always_ff @(posedge clk or posedge reset_cycle) begin
-    if (reset_cycle) begin
-      instruction_reg <= 8'h00;
-      immediate_value <= 8'h00;
-      latched_opcode  <= 8'h00;
-    end 
-    // Normal opcode fetch
-    else if (state == STATE_FETCH_INST && bus_ready && !ldi_in_progress) begin
-      instruction_reg <= instruction;
-      latched_opcode  <= instruction;
-      $display("[INST LATCH] New instruction: %h, latched_opcode: %h", instruction, instruction);
-    end 
-    // Immediate fetch for LDI
-    else if (state == STATE_FETCH_IMM && bus_ready) begin
-      immediate_value <= instruction;
-      $display("[IMM LATCH] Immediate value: %h for opcode: %h", instruction, latched_opcode);
+
+always_ff @(posedge clk or posedge reset_cycle) begin
+  if (state == STATE_LOAD_IMM && latched_opcode == OP_LDI) begin
+  $display("[LDI WRITE] R%0d ", instruction_reg[2:0]);
+end
+
+  if (reset_cycle) begin
+    instruction_reg <= 8'h00;
+    latched_opcode  <= 8'h00;
+  end else begin
+   
+    if (state == STATE_FETCH_INST && bus_ready) begin
+      instruction_reg <= instruction;   // IR <= bus (via regi_out)
+      // NOTE: do NOT set latched_opcode here; it will see the *old* IR.
+    end
+
+    if (state == STATE_NEXT && !ldi_in_progress) begin
+      latched_opcode <= instruction_reg;
+      $display("[INST LATCH] New instruction: %02h, latched_opcode: %02h",
+               instruction_reg, instruction_reg);
     end
   end
+end
+
 
   // ─── Control FSM ─────────────────────────────────────────
   always_ff @(posedge clk or posedge reset_cycle) begin
@@ -102,14 +107,17 @@ module cpu_ctrl (
     else if (state == STATE_HALT) begin
       state <= STATE_HALT;
 
-    // LDI states
+    // LDI sub-flow
     end 
     else if (state == STATE_FETCH_IMM) begin
-      if (bus_ready) state <= STATE_LOAD_IMM;
-      else           state <= STATE_FETCH_IMM;
-    end 
+      state <= STATE_WAIT_IMM; // give RAM time to respond
+    end
+    else if (state == STATE_WAIT_IMM) begin
+      if (bus_ready) state <= STATE_LOAD_IMM;   // imm byte is on the bus now
+      else           state <= STATE_WAIT_IMM;   // keep waiting
+    end
     else if (state == STATE_LOAD_IMM) begin
-      state           <= STATE_FETCH_PC;
+      state           <= STATE_FETCH_PC;        // writeback is handled outside ctrl
       ldi_in_progress <= 0;
       $display("[LDI FSM] LDI complete, returning to FETCH_PC");
 
@@ -175,31 +183,32 @@ module cpu_ctrl (
     c_rfi = 0;
     c_rfo = 0;
 
-    // PC increments on normal fetch, and also for LDI immediate
-    pc_inc = (state == STATE_FETCH_PC) || (state == STATE_FETCH_IMM);
+    // PC increments on normal fetch, and also during LDI immediate fetch
+pc_inc = ((state == STATE_FETCH_INST) && bus_ready)   // opcode latched -> advance to next
+      || ((state == STATE_FETCH_IMM)  && bus_ready); 
 
     // PC loads on jumps/calls/returns
     pc_load = (state == STATE_JUMP && jump_allowed)
-            || (state == STATE_PC_STORE)
             || (state == STATE_RET)
             || (state == STATE_TMP_JUMP);
 
     // PC decrements for RET/POP
     pc_dec = (state == STATE_RET) || (state == STATE_FETCH_SP);
             
-    case (state)
-      STATE_ALU_WRITEBACK: c_rfi = 1;
-      STATE_LOAD_IMM: if (latched_opcode == OP_LDI) c_rfi = 1;
-      STATE_IN:       c_rfi = 1;
-      STATE_SET_ADDR: c_rfi = 1;
-      STATE_SET_REG:  c_rfi = 1;
-      STATE_MOV_STORE: if (instruction[5:3] != 3'b111) c_rfi = 1;
-      STATE_REG_READ: c_rfo = 1;
-      default: begin
-        c_rfi = 0;
-        c_rfo = 0;
-      end
-    endcase
-  end
+
+  case (state)
+    STATE_ALU_WRITEBACK: c_rfi = 1;
+    STATE_LOAD_IMM:      if (latched_opcode == OP_LDI) c_rfi = 1;
+    STATE_IN:            c_rfi = 1;
+    STATE_SET_ADDR:      c_rfi = 1;
+    STATE_SET_REG:       c_rfi = 1;
+    STATE_MOV_STORE:     if (instruction[5:3] != 3'b111) c_rfi = 1;
+
+    default: begin
+      c_rfi = 0;
+      c_rfo = 0;
+    end
+  endcase
+end
 
 endmodule

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import re
 import sys
-
-progf = sys.argv[1]
+from typing import List, Dict
 
 inst = {
     "nop": 0x00,
@@ -10,9 +9,9 @@ inst = {
     "ret": 0b00000010,
     "lda": 0b10000111,
     "out": 0b00000011,
-    "in": 0b00000100,
+    "in":  0b00000100,
     "hlt": 0b00000101,
-    "cmp": 0b00000110,
+    "cmp": 0b00000110, 
     "sta": 0b10111000,
     "jmp": 0b00011000,
     "jz":  0b00011001,
@@ -48,103 +47,199 @@ reg = {
 
 TEXT, DATA = 0, 1
 MEM_SIZE = 256
-mem = []
-section = None
-labels = {}
-data = {}
-data_addr = {}
-symbolic_refs = {}
 
-def rich_int(v):
+class AsmError(Exception):
+    pass
+
+def rich_int(v: str) -> int:
     v = v.strip()
-    if v.startswith("0x"):
+    if v.startswith(("0x", "0X")):
         return int(v, 16)
-    elif v.startswith("0b"):
+    if v.startswith(("0b", "0B")):
         return int(v, 2)
+    return int(v)
+
+def strip_comment(line: str) -> str:
+    return re.sub(r";.*", "", line)
+
+def split_label(line: str):
+    """
+    Returns (label_or_None, rest_of_line_without_label)
+    Handles 'foo:' and 'foo: instruction ...'
+    """
+    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", line)
+    if m:
+        return m.group(1), m.group(2)
+    return None, line
+
+def tokenize(rest: str):
+    """
+    Split operands on commas and whitespace, drop empties.
+    """
+    return [t.strip() for t in re.split(r"[,\s]+", rest) if t.strip()]
+
+def is_symbol(x: str) -> bool:
+    return x.startswith("%") and len(x) > 1
+
+def expect_args(op, args, n_min=None, n_max=None, exact=None):
+    n = len(args)
+    if exact is not None:
+        if n != exact:
+            raise AsmError(f"{op}: expected {exact} arg(s), got {n}")
     else:
-        return int(v)
+        if n_min is not None and n < n_min:
+            raise AsmError(f"{op}: expected at least {n_min} arg(s), got {n}")
+        if n_max is not None and n > n_max:
+            raise AsmError(f"{op}: expected at most {n_max} arg(s), got {n}")
 
-with open(progf) as f:
-    for line in f:
-        line = re.sub(r";.*", "", line).strip()
-        if not line:
-            continue
+def assemble(progf: str) -> List[int]:
+    mem: List[int] = []
+    section = None
+    labels: Dict[str, int] = {}
+    data_kv: Dict[str, int] = {}
+    data_addr: Dict[str, int] = {}
+    symbolic_refs: Dict[int, str] = {}
 
-        if line == ".text":
-            section = TEXT
-            continue
-        elif line == ".data":
-            section = DATA
-            continue
+    with open(progf, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = strip_comment(raw).strip()
+            if not line:
+                continue
 
-        if section == DATA:
-            if "=" in line:
+            if line.lower() == ".text":
+                section = TEXT
+                continue
+            if line.lower() == ".data":
+                section = DATA
+                continue
+            if section is None:
+                raise AsmError("No section selected. Start with .text or .data")
+
+        
+            label, rest = split_label(line)
+            if label is not None:
+                if section != TEXT:
+                    raise AsmError(f"Label '{label}' outside .text")
+                labels[label] = len(mem)
+                line = rest.strip()
+                if not line:
+                    continue 
+
+            if section == DATA:
+                if "=" not in line:
+                    raise AsmError(f".data line must be 'name = value', got: {line}")
                 key, val = map(str.strip, line.split("=", 1))
-                data[key] = int(val)
-        elif section == TEXT:
-            tokens = line.split()
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    raise AsmError(f"Invalid data symbol name: {key}")
+                try:
+                    data_kv[key] = rich_int(val)
+                except ValueError:
+                    raise AsmError(f"Invalid numeric literal for {key}: {val}")
+                continue
+
+      
+            tokens = tokenize(line)
             if not tokens:
                 continue
-            if tokens[0].endswith(":"):
-                label = tokens[0][:-1]
-                labels[label] = len(mem)
-                continue
 
-            op = tokens[0]
+            op = tokens[0].lower()
             args = tokens[1:]
 
-            if op == "ldi":
-                r = reg[args[0]]
-                opcode = (inst[op] & 0b11111000) | r
-                mem.append(opcode)
-                if args[1].startswith("%"):
-                    symbolic_refs[len(mem)] = args[1][1:]
-                    mem.append(0)
+            def reg_code(name: str) -> int:
+                n = name.upper()
+                if n not in reg:
+                    raise AsmError(f"Unknown register '{name}'")
+                return reg[n]
+
+            def emit(byte: int):
+                if not (0 <= byte <= 0xFF):
+                    raise AsmError(f"Byte out of range: {byte}")
+                mem.append(byte)
+
+            def emit_addr_or_symbol(token: str):
+                if is_symbol(token):
+                    symbolic_refs[len(mem)] = token[1:]
+                    emit(0)
                 else:
-                    mem.append(rich_int(args[1]))
-            elif op in ("push", "pop"):
-                r = reg[args[0]]
+                    emit(rich_int(token))
+
+            if op not in inst:
+                raise AsmError(f"Unknown instruction '{op}'")
+
+            if op == "ldi":
+                expect_args(op, args, exact=2)
+                if args[0].upper() == "M":
+                    raise AsmError("ldi to M (memory) is not supported")
+                r = reg_code(args[0])
                 opcode = (inst[op] & 0b11111000) | r
-                mem.append(opcode)
+                emit(opcode)
+                emit_addr_or_symbol(args[1])
+
+            elif op in ("push", "pop"):
+                expect_args(op, args, exact=1)
+                r = reg_code(args[0])
+                opcode = (inst[op] & 0b11111000) | r
+                emit(opcode)
+
             elif op == "mov":
-                r1 = reg[args[0]]
-                r2 = reg[args[1]]
+                expect_args(op, args, exact=2)
+                r1 = reg_code(args[0])
+                r2 = reg_code(args[1])
                 opcode = (inst[op] & 0b11000111) | (r1 << 3)
                 opcode = (opcode & 0b11111000) | r2
-                mem.append(opcode)
+                emit(opcode)
+
             elif op in ("sta", "lda", "jmp", "jz", "jnz", "je", "jne", "jc", "jnc"):
-                opcode = inst[op]
-                mem.append(opcode)
-                if args[0].startswith("%"):
-                    symbolic_refs[len(mem)] = args[0][1:]
-                    mem.append(0)
-                else:
-                    mem.append(rich_int(args[0]))
-            elif op == "out":
-                mem.append(inst[op])
-                mem.append(rich_int(args[0]))
+                expect_args(op, args, exact=1)
+                emit(inst[op])
+                emit_addr_or_symbol(args[0])
+
+            elif op in ("out", "in"):
+                expect_args(op, args, exact=1)
+                emit(inst[op])
+                emit(rich_int(args[0]))
+
             else:
-                mem.append(inst[op])
+                expect_args(op, args, exact=0)
+                emit(inst[op])
 
-# Append .data section and store addresses
-for k, v in data.items():
-    data_addr[k] = len(mem)
-    mem.append(v)
 
-# Add labels to the lookup
-data_addr.update(labels)
+    for k, v in data_kv.items():
+        data_addr[k] = len(mem)
+        if not (0 <= v <= 0xFF):
+            raise AsmError(f"Data value for {k} out of 8-bit range: {v}")
+        mem.append(v)
 
-# Replace symbolic references (%label or %var)
-for i, name in symbolic_refs.items():
-    if name not in data_addr:
-        print(f"Error: undefined symbol %{name}")
+  
+    data_addr.update(labels)
+
+    for idx, name in symbolic_refs.items():
+        if name not in data_addr:
+            raise AsmError(f"undefined symbol %{name}")
+        addr = data_addr[name]
+        if not (0 <= addr <= 0xFF):
+            raise AsmError(f"Address for %{name} out of 8-bit range: {addr}")
+        mem[idx] = addr
+
+
+    if len(mem) > MEM_SIZE:
+        raise AsmError(f"program too large: {len(mem)} bytes > {MEM_SIZE}")
+    while len(mem) < MEM_SIZE:
+        mem.append(0)
+
+    return mem
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: asm.py program.asm", file=sys.stderr)
+        sys.exit(2)
+    progf = sys.argv[1]
+    try:
+        mem = assemble(progf)
+    except AsmError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    mem[i] = data_addr[name]
+    print(" ".join(f"{b:02x}" for b in mem))
 
-# ✅ Pad memory to 256 bytes
-while len(mem) < MEM_SIZE:
-    mem.append(0)
-
-# Output memory in hex format
-print(' '.join(f"{b:02x}" for b in mem))
-
+if __name__ == "__main__":
+    main()

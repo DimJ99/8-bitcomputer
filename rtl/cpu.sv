@@ -34,31 +34,32 @@ logic        c_rfi, c_rfo;
       OP_ALU  = 8'b01_000_000,
       OP_MOV  = 8'b10_000_000;
 
-    localparam [7:0]
-      STATE_NEXT       = 8'h00,
-      STATE_FETCH_PC   = 8'h01,
-      STATE_FETCH_INST = 8'h02,
-      STATE_HALT       = 8'h03,
-      STATE_JUMP       = 8'h04,
-      STATE_OUT        = 8'h05,
-      STATE_ALU_OUT    = 8'h06,
-      STATE_ALU_EXEC   = 8'h07,
-      STATE_MOV_STORE  = 8'h08,
-      STATE_MOV_FETCH  = 8'h09,
-      STATE_MOV_LOAD   = 8'h0A,
-      STATE_FETCH_SP   = 8'h0C,
-      STATE_PC_STORE   = 8'h0D,
-      STATE_TMP_JUMP   = 8'h0E,
-      STATE_RET        = 8'h0F,
-      STATE_INC_SP     = 8'h10,
-      STATE_SET_ADDR   = 8'h11,
-      STATE_IN         = 8'h12,
-      STATE_REG_STORE  = 8'h13,
-      STATE_SET_REG    = 8'h14,
-      STATE_LOAD_IMM = 8'h15,
-      STATE_WAIT_FOR_RAM = 8'h16,
-      STATE_ALU_WRITEBACK = 8'h17,
-      STATE_FETCH_IMM = 8'h19;
+localparam [7:0]
+  STATE_NEXT         = 8'h00,
+  STATE_FETCH_PC     = 8'h01,
+  STATE_FETCH_INST   = 8'h02,
+  STATE_HALT         = 8'h03,
+  STATE_JUMP         = 8'h04,
+  STATE_OUT          = 8'h05,
+  STATE_ALU_OUT      = 8'h06,
+  STATE_ALU_EXEC     = 8'h07,
+  STATE_MOV_STORE    = 8'h08,
+  STATE_MOV_FETCH    = 8'h09,
+  STATE_MOV_LOAD     = 8'h0A,
+  STATE_FETCH_SP     = 8'h0C,
+  STATE_PC_STORE     = 8'h0D,
+  STATE_TMP_JUMP     = 8'h0E,
+  STATE_RET          = 8'h0F,
+  STATE_INC_SP       = 8'h10,
+  STATE_SET_ADDR     = 8'h11,
+  STATE_IN           = 8'h12,
+  STATE_REG_STORE    = 8'h13,
+  STATE_SET_REG      = 8'h14,
+  STATE_LOAD_IMM     = 8'h15,
+  STATE_WAIT_FOR_RAM = 8'h16,
+  STATE_ALU_WRITEBACK= 8'h17,
+  STATE_FETCH_IMM    = 8'h19,
+  STATE_WAIT_IMM     = 8'h1A;   // <<< add this
 
     localparam [2:0]
       ALU_ADD = 3'b000,
@@ -134,13 +135,13 @@ logic        c_rfi, c_rfo;
     logic [7:0] regi_out;
     logic       c_ii;
 
-    register m_regi (
-      .in    (bus),
-      .clk   (clk),
-      .enable(c_ii),
-      .reset (reset),
-      .out   (regi_out)
-    );
+register m_regi (
+  .in    (bus),
+  .clk   (internal_clk),   
+  .enable(c_ii),
+  .reset (reset),
+  .out   (regi_out)
+);
 
     // ─────────────────────────────────────────────────────────────
     //  Memory‑address  
@@ -240,7 +241,13 @@ counter m_sp (
   assign bus_from_alu = alu_out;
   assign bus_drive_alu = c_eo_alu;         // ALU out
   logic c_eo_imm;
-assign c_eo_imm = (state == STATE_LOAD_IMM || state == STATE_SET_REG);
+assign c_eo_imm = (state == STATE_LOAD_IMM && opcode == OP_LDI)
+               || (state == STATE_SET_REG);
+
+
+
+
+
   logic c_eo;
   assign c_eo = c_eo_alu || c_eo_imm;
 
@@ -265,8 +272,7 @@ assign c_eo_imm = (state == STATE_LOAD_IMM || state == STATE_SET_REG);
               safe_bus_drive_reg  ? bus_from_reg  :
               safe_bus_drive_imm  ? bus_from_imm  :
               8'hZZ;
-assign c_ie = (state == STATE_LOAD_IMM && opcode == OP_LDI);
-
+assign c_ie = (state == STATE_WAIT_IMM && bus_ready);
 
 
 
@@ -310,45 +316,50 @@ assign operand2 = regi_out[2:0];
                     (opcode == OP_CALL)                   ? REG_T   : 'x;
 
 
-   assign c_ci = ((state == STATE_FETCH_PC   && bus_ready) ||
-                  (state == STATE_FETCH_IMM  && bus_ready) ||    
-                  (state == STATE_RET        && bus_ready) ||
-                  (state == STATE_JUMP       && jump_allowed && bus_ready) ||
-                  (state == STATE_TMP_JUMP   && bus_ready) ||
-                  (state == STATE_MOV_FETCH  && mov_memory && bus_ready));
+assign c_ci = ((state == STATE_FETCH_INST && bus_ready) ||
+               (state == STATE_WAIT_IMM   && bus_ready) ||
+               (state == STATE_RET        && bus_ready) ||
+               ((state == STATE_JUMP)     && jump_allowed && bus_ready) ||
+               (state == STATE_TMP_JUMP   && bus_ready) ||
+               ((state == STATE_MOV_FETCH) && mov_memory && bus_ready));
 
 
 
- assign c_co = (state == STATE_FETCH_PC)
-             || (state == STATE_FETCH_IMM)
+assign c_co = (state == STATE_FETCH_PC)
              || (state == STATE_PC_STORE)
-           || (state == STATE_MOV_FETCH && mov_memory);
+             || (state == STATE_MOV_FETCH && mov_memory);
+
+
 
 
     assign c_halt = (state == STATE_HALT);
-    assign c_ii   = (state == STATE_FETCH_INST);
+   assign c_ii = (state == STATE_FETCH_INST) && bus_ready;
     assign c_j    = ((state == STATE_JUMP && jump_allowed) ||
                     state == STATE_RET ||
                     state == STATE_TMP_JUMP);
 
 assign c_mi = (state == STATE_FETCH_PC)
-            || (state == STATE_FETCH_SP)       // genuine memory ops (push/pop)
+            || (state == STATE_FETCH_SP)       
             || (state == STATE_MOV_FETCH && mov_memory);
-  assign c_ro = (state == STATE_FETCH_INST ||
-                (state == STATE_JUMP && jump_allowed) ||
-                state == STATE_RET || state == STATE_SET_ADDR ||
-                state == STATE_SET_REG ||
-                (state == STATE_MOV_LOAD && mov_memory) ||
-                (state == STATE_MOV_STORE && operand2 == 3'b111) ||
-                state == STATE_LOAD_IMM ||
-                state == STATE_WAIT_FOR_RAM|| state == STATE_FETCH_IMM);  
+assign c_ro = (state == STATE_FETCH_INST) ||
+              ((state == STATE_JUMP) && jump_allowed) ||
+              (state == STATE_RET) || (state == STATE_SET_ADDR) ||
+              (state == STATE_SET_REG) ||
+              ((state == STATE_MOV_LOAD) && mov_memory) ||
+              ((state == STATE_MOV_STORE) && operand2 == 3'b111) ||
+              (state == STATE_WAIT_FOR_RAM) ||
+              (state == STATE_FETCH_IMM) ||              // keep
+              (state == STATE_WAIT_IMM);                 
 
 
 
-    assign c_ri = ((state == STATE_MOV_STORE && operand1 == 3'b111) ||
-                  state == STATE_REG_STORE ||
-                  state == STATE_PC_STORE|| state == STATE_ALU_WRITEBACK
-);
+
+
+assign c_ri = ((state == STATE_MOV_STORE && operand1 == 3'b111) ||
+               state == STATE_REG_STORE ||
+               state == STATE_PC_STORE   ||
+               state == STATE_ALU_WRITEBACK ||
+               state == STATE_SET_REG);
 
     assign c_so = (state == STATE_FETCH_SP);
     assign c_sd = (state == STATE_TMP_JUMP || state == STATE_REG_STORE);
@@ -357,20 +368,27 @@ assign c_mi = (state == STATE_FETCH_PC)
 
 
 cpu_ctrl m_ctrl (
-  .clk(clk),
+  .clk(internal_clk),       // <-- was clk
   .reset_cycle(reset),
   .instruction(regi_out),
   .state(state),
   .cycle(cycle),
   .bus_ready(bus_ready),
   .opcode(opcode),
-  .c_rfi(c_rfi),   // <-- This is the key new connection
+  .c_rfi(c_rfi),
   .c_rfo(c_rfo),
-  .pc_inc       (pc_inc),
-  .pc_load      (pc_load),
-  .jump_allowed(jump_allowed) ,
-  .pc_dec       (pc_dec)
+  .pc_inc(pc_inc),
+  .pc_load(pc_load),
+  .jump_allowed(jump_allowed),
+  .pc_dec(pc_dec)
 );
+always_ff @(posedge clk) begin
+  if (state == STATE_LOAD_IMM && opcode == OP_LDI) begin
+    $display("[LDI WRITE] R%0d <- 0x%02h | c_rfi=%b bus=%h imm_out=%h",
+             operand2, imm_out, c_rfi, bus, imm_out);
+  end
+end
+
 
     // Halt flip‑flop
 
@@ -452,4 +470,8 @@ always_ff @(posedge clk) begin
         $display("[IR DEBUG] After next clock, regi_out should be %h", bus);
     end
 end
+always_ff @(posedge clk) if (state == STATE_FETCH_IMM)
+  $display("[FETCH_IMM DEBUG] bus=%h bus_ready=%b c_ie=%b imm_out=%h",
+           bus, bus_ready, c_ie, imm_out);
+
   endmodule
