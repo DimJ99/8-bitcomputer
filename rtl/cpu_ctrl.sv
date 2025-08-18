@@ -75,24 +75,13 @@ module cpu_ctrl (
 
 
 always_ff @(posedge clk or posedge reset_cycle) begin
-  if (state == STATE_LOAD_IMM && latched_opcode == OP_LDI) begin
-  $display("[LDI WRITE] R%0d ", instruction_reg[2:0]);
-end
-
   if (reset_cycle) begin
-    instruction_reg <= 8'h00;
-    latched_opcode  <= 8'h00;
+    latched_opcode <= 8'h00;
   end else begin
-   
-    if (state == STATE_FETCH_INST && bus_ready) begin
-      instruction_reg <= instruction;   // IR <= bus (via regi_out)
-      // NOTE: do NOT set latched_opcode here; it will see the *old* IR.
-    end
-
     if (state == STATE_NEXT && !ldi_in_progress) begin
-      latched_opcode <= instruction_reg;
+      latched_opcode <= instruction; // instruction == regi_out (stable now)
       $display("[INST LATCH] New instruction: %02h, latched_opcode: %02h",
-               instruction_reg, instruction_reg);
+               instruction, instruction);
     end
   end
 end
@@ -183,11 +172,8 @@ end
     c_rfi = 0;
     c_rfo = 0;
 
-    // PC increments on normal fetch, and also during LDI immediate fetch
-pc_inc = ((state == STATE_FETCH_INST) && bus_ready)   // opcode latched -> advance to next
-      || ((state == STATE_FETCH_IMM)  && bus_ready); 
-
-    // PC loads on jumps/calls/returns
+  pc_inc = ((state == STATE_FETCH_INST) && bus_ready)   // opcode fetched
+        || ((state == STATE_WAIT_IMM)   && bus_ready);  // immediate fetched
     pc_load = (state == STATE_JUMP && jump_allowed)
             || (state == STATE_RET)
             || (state == STATE_TMP_JUMP);
