@@ -30,7 +30,7 @@ always_ff @(posedge clk) begin
     $display("[REG WRITE] Register[%0d] <= %0h (from bus %0h)", sel_in, data_in, data_in);
   end
 end
-  // Robust output handling
+  // output handling
   assign data_out = output_enable ? registers[sel_out] : 8'hZZ;
 
   // Individual register access (debug or named access)
@@ -45,7 +45,7 @@ end
   assign regg = registers[6];
   assign regt = registers[7];
 
-  // Debug display (optional but helpful)
+  // Debug display
   always_ff @(posedge clk) begin
     $display("[REG_DEBUG] A:%h, B:%h, C:%h, D:%h, E:%h, F:%h, G:%h, T:%h", 
              rega, regb, regc, regd, rege, regf, regg, regt);

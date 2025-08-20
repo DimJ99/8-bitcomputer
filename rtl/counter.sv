@@ -1,14 +1,16 @@
 module counter (
-  input  logic        clk,          // system clock
-  input  logic        reset,        // asynchronous reset
-  input  logic [7:0]  load_value,   // value to load into PC
-  input  logic        load,         // synchronous load enable
-  input  logic        inc,          // increment enable
-  input  logic        dec,          // decrement enable
-  output logic [7:0]  out           // current PC value
+  input  logic        clk,        
+  input  logic        reset,       
+  input  logic [7:0]  load_value, 
+  input  logic        load,         
+  input  logic        inc,       
+  input  logic        dec,          
+  output logic [7:0]  out           
 );
 
-  // Priority: reset > load > decrement > increment
+//---------------------------------------------------------------
+// PC
+//---------------------------------------------------------------
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       out <= 8'd0;
@@ -18,7 +20,7 @@ module counter (
       out <= out - 8'd1;
     end else if (inc) begin
       out <= out + 8'd1;
-    end // otherwise retain current PC
+    end 
   end
 
 endmodule

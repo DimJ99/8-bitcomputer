@@ -42,6 +42,6 @@ always_ff @(posedge m_machine.m_cpu.halted) begin
   $stop;
 end
 initial begin
-  #2000 $display("Simulation timed out!"); $finish;
+  #2000$display("Simulation timed out!"); $finish;
 end
 endmodule

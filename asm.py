@@ -47,7 +47,7 @@ reg = {
 
 TEXT, DATA = 0, 1
 MEM_SIZE = 256
-
+# so long and good night!!
 class AsmError(Exception):
     pass
 
