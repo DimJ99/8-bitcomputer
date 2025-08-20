@@ -24,25 +24,24 @@ module machine_tb;
     #10 enable_clk = 1;
   end
 
-  always_ff @(posedge m_machine.m_cpu.halted) begin
-    $display("============================================");
-    $display("CPU halted normally.");
-    $display(
-      "REGISTERS: A: %h, B: %h, C: %h, D: %h, E: %h, F: %h, G: %h, Temp: %h",
-      m_machine.m_cpu.m_registers.rega,
-      m_machine.m_cpu.m_registers.regb,
-      m_machine.m_cpu.m_registers.regc,
-      m_machine.m_cpu.m_registers.regd,
-      m_machine.m_cpu.m_registers.rege,
-      m_machine.m_cpu.m_registers.regf,
-      m_machine.m_cpu.m_registers.regg,
-      m_machine.m_cpu.m_registers.regt
-    );
-  $display("MEM[0x00] = %h", m_machine.m_ram.mem[8'd00]);
-
-    $stop;
-  end
+always_ff @(posedge m_machine.m_cpu.halted) begin
+  $display("============================================");
+  $display("CPU halted normally.");
+  $display(
+    "REGISTERS(dec): A:%0d, B:%0d, C:%0d, D:%0d, E:%0d, F:%0d, G:%0d, Temp:%0d",
+    $unsigned(m_machine.m_cpu.m_registers.rega),
+    $unsigned(m_machine.m_cpu.m_registers.regb),
+    $unsigned(m_machine.m_cpu.m_registers.regc),
+    $unsigned(m_machine.m_cpu.m_registers.regd),
+    $unsigned(m_machine.m_cpu.m_registers.rege),
+    $unsigned(m_machine.m_cpu.m_registers.regf),
+    $unsigned(m_machine.m_cpu.m_registers.regg),
+    $unsigned(m_machine.m_cpu.m_registers.regt)
+  );
+  $display("MEM[0x00] = %0d", $unsigned(m_machine.m_ram.mem[8'd00]));
+  $stop;
+end
 initial begin
-  #10000 $display("Simulation timed out!"); $finish;
+  #2000 $display("Simulation timed out!"); $finish;
 end
 endmodule

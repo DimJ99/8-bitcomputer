@@ -1,3 +1,4 @@
 .text
 ldi A, 0x05
+ldi F, 0x07
 hlt

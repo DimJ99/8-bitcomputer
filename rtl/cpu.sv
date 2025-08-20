@@ -92,6 +92,13 @@ localparam [7:0]
     // ─────────────────────────────────────────────────────────────
     logic flag_zero, flag_carry;
 
+// 8 regs → 3-bit index
+typedef logic [2:0] regid_t;
+
+// From the instruction register (IR)
+wire regid_t operand_src = regi_out[5:3]; // bits [5:3]
+wire regid_t operand_dst = regi_out[2:0]; // bits [2:0]
+regid_t sel_in, sel_out;
 
     logic cycle_clk    = 0;
     logic internal_clk = 0;
@@ -113,7 +120,6 @@ localparam [7:0]
     // ─────────────────────────────────────────────────────────────
     //  General‑purpose registers
     // ─────────────────────────────────────────────────────────────
-    logic [2:0] sel_in, sel_out;
     logic [7:0] rega_out, regb_out, regs_out;
 
     cpu_reg m_registers (
@@ -142,13 +148,23 @@ register m_regi (
   .reset (reset),
   .out   (regi_out)
 );
+logic [2:0] rd_q;
 
+always_ff @(posedge internal_clk or posedge reset) begin
+  if (reset) rd_q <= '0;
+  // Latch the low 3 bits (dst) at the moment IR is captured
+  else if (state == STATE_FETCH_INST && c_ii) rd_q <= instruction[2:0];
+  
+end
+
+// For ALU ops you always write REG_A by design; otherwise use latched rd
+wire [2:0] wb_dst = (is_ALU) ? REG_A : rd_q;
     // ─────────────────────────────────────────────────────────────
     //  Memory‑address  
     // ─────────────────────────────────────────────────────────────
     logic c_mi;
  register m_mar (
-  .in    ((state == STATE_OUT && opcode == OP_OUT) ? 8'h00 : bus),
+ .in    ((state == STATE_OUT && is_OUT) ? 8'h00 : bus),
   .clk   (internal_clk),
   .enable(c_mi),
   .reset (reset),
@@ -188,10 +204,16 @@ counter m_sp (
   .out        (sp_out)
 );
 
-
-    // ─────────────────────────────────────────────────────────────
-    //  ALU 
-    // ─────────────────────────────────────────────────────────────
+// Group decodes (top 5 bits)
+// Decode off the IR (regi_out), not the controller's opcode latch
+wire is_LDI  = (instruction[7:3] == OP_LDI [7:3]);
+wire is_MOV  = (instruction[7:3] == OP_MOV [7:3]);
+wire is_ALU  = (instruction[7:3] == OP_ALU [7:3]);
+wire is_POP  = (instruction[7:3] == OP_POP [7:3]);
+wire is_IN   = (instruction[7:3] == OP_IN  [7:3]);
+wire is_CALL = (instruction[7:3] == OP_CALL[7:3]);
+// Single-opcode exact (bit pattern is unique)
+wire is_OUT  = (instruction == OP_OUT);
     wire       c_eo_alu;
     logic c_ee;
     logic [7:0] alu_out;
@@ -241,14 +263,13 @@ counter m_sp (
   assign bus_from_alu = alu_out;
   assign bus_drive_alu = c_eo_alu;         // ALU out
   logic c_eo_imm;
-assign c_eo_imm = (opcode == OP_LDI) && (state == STATE_LOAD_IMM);
+assign c_eo_imm = is_LDI && (state == STATE_LOAD_IMM);
 
 
 
 
 
-  logic c_eo;
-  assign c_eo = c_eo_alu || c_eo_imm;
+  wire c_eo;
 
   assign bus_from_reg = regs_out;
   assign bus_drive_reg = c_rfo;        // register file out
@@ -262,16 +283,17 @@ assign c_eo_imm = (opcode == OP_LDI) && (state == STATE_LOAD_IMM);
   logic       safe_bus_drive_imm;
 
   assign bus_from_imm  = imm_out;
-  assign bus_drive_imm = c_eo_imm;
+  assign bus_drive_imm = is_LDI && (state == STATE_LOAD_IMM);
   assign safe_bus_drive_imm = (bus_drive_imm === 1'b1);
 
-  assign bus = safe_bus_drive_pc   ? bus_from_pc   :
-              safe_bus_drive_sp   ? bus_from_sp   :
-              safe_bus_drive_alu  ? bus_from_alu  :
-              safe_bus_drive_reg  ? bus_from_reg  :
-              safe_bus_drive_imm  ? bus_from_imm  :
-              8'hZZ;
-assign c_ie = (state == STATE_WAIT_IMM && bus_ready);
+assign bus =
+       (bus_drive_pc  ? bus_from_pc  :
+        bus_drive_sp  ? bus_from_sp  :
+        bus_drive_alu ? bus_from_alu :
+        bus_drive_reg ? bus_from_reg :
+        bus_drive_imm ? bus_from_imm :
+                        8'hZZ);
+assign c_ie = (state == STATE_WAIT_IMM) && bus_ready;
 
 
 
@@ -301,18 +323,22 @@ assign operand2 = regi_out[2:0];
                         ((operand2 == JMP_JNZ) && !flag_zero) ||
                         ((operand2 == JMP_JC)  && flag_carry) ||
                         ((operand2 == JMP_JNC) && !flag_carry);
+assign alu_op =
+  is_ALU ? instruction[5:3] :
+  (instruction[7:3] == OP_CMP[7:3]) ? ALU_SUB : 3'b000;
 
-    assign alu_op = (opcode == OP_ALU) ? operand1 :
-                    (opcode == OP_CMP) ? ALU_SUB  : 'x;
+assign sel_in =
+       (is_MOV)            ? operand_dst :
+       (is_ALU || is_IN)   ? REG_A       :
+       (is_POP || is_LDI)  ? operand_dst :
+       (is_CALL)           ? REG_T       : '0;
 
-    assign sel_in  = (opcode == OP_ALU || opcode == OP_IN)  ? REG_A   :
-                    (opcode == OP_MOV)                     ? operand1 :
-                    (opcode == OP_POP || opcode == OP_LDI) ? operand2 :
-                    (opcode == OP_CALL)                    ? REG_T   : 'x;
+assign sel_out =
+       (is_MOV)            ? operand_src :
+       (is_OUT)            ? REG_A       :
+       (is_CALL)           ? REG_T       : '0;
 
-    assign sel_out = (opcode == OP_OUT)                    ? REG_A   :
-                    (opcode == OP_PUSH || opcode == OP_MOV) ? operand2 :
-                    (opcode == OP_CALL)                   ? REG_T   : 'x;
+
    assign c_ii = (state == STATE_FETCH_INST) && bus_ready;
 assign c_ci = ((state == STATE_FETCH_INST && bus_ready) ||
                (state == STATE_WAIT_IMM   && bus_ready) ||
@@ -325,7 +351,20 @@ assign c_co = (state == STATE_FETCH_PC)
            || (state == STATE_PC_STORE)
            || (state == STATE_MOV_FETCH && mov_memory)
            || (state == STATE_FETCH_IMM);   
+always_ff @(posedge internal_clk) if (c_mi)
+  $display("[MAR] <= %02h", bus);
 
+// Optional: keep the warning but time it correctly
+logic arm_compare;
+always_ff @(posedge internal_clk or posedge reset) begin
+  if (reset) arm_compare <= 1'b0;
+  else if (state == STATE_FETCH_INST && c_ii) arm_compare <= 1'b1;
+  else if (arm_compare) begin
+    arm_compare <= 1'b0;
+    if (instruction != opcode)
+      $display("[WARN] IR/opcode mismatch: IR=%02h opcode=%02h", instruction, opcode);
+  end
+end
 
 
     assign c_halt = (state == STATE_HALT);
@@ -337,22 +376,22 @@ assign c_mi = (state == STATE_FETCH_PC)
            || (state == STATE_FETCH_SP)
            || (state == STATE_MOV_FETCH && mov_memory)
            || (state == STATE_FETCH_IMM);   
-assign c_ro = (state == STATE_FETCH_INST) ||
-              ((state == STATE_JUMP) && jump_allowed) ||
-              (state == STATE_RET) ||
-              ((state == STATE_MOV_LOAD)  && mov_memory) ||
-              ((state == STATE_MOV_STORE) && operand2 == 3'b111) ||
-              (state == STATE_WAIT_FOR_RAM) ||
-              (state == STATE_WAIT_IMM);             
+assign c_ro =
+       (state == STATE_FETCH_INST)     ||
+       (state == STATE_WAIT_FOR_RAM)   ||  // <— keep asserted while waiting for opcode
+       (state == STATE_WAIT_IMM)       ||  // <— keep asserted while waiting for immediate
+       ((state == STATE_MOV_LOAD)  && mov_memory) ||
+       ((state == STATE_MOV_STORE) && (operand2 == 3'b111)) ||
+       (state == STATE_JUMP && jump_allowed) ||
+       (state == STATE_RET);            
 
 
 // …after state/opcode/operand wiring…
 
-assign c_ri = ((state == STATE_MOV_STORE && operand1 == 3'b111) ||
-               state == STATE_REG_STORE ||
-               state == STATE_PC_STORE   ||
-               state == STATE_ALU_WRITEBACK ||
-               state == STATE_SET_REG);
+assign c_ri =
+       ((state == STATE_MOV_STORE) && (operand1 == 3'b111)) // MOV r -> [mem]
+    ||  (state == STATE_REG_STORE)                          // PUSH
+    ||  (state == STATE_PC_STORE);                          // CALL
 
     assign c_so = (state == STATE_FETCH_SP);
     assign c_sd = (state == STATE_TMP_JUMP || state == STATE_REG_STORE);
@@ -370,6 +409,7 @@ cpu_ctrl m_ctrl (
   .bus_ready(bus_ready),
   .opcode(opcode),
   .c_rfi(c_rfi),
+  .c_eo(c_eo),
   .c_rfo(c_rfo),
   .pc_inc(pc_inc),
   .pc_load(pc_load),
@@ -450,12 +490,12 @@ end
   end
 always_ff @(posedge clk) begin
   if (state == STATE_ALU_WRITEBACK) begin
-    $display("[DEBUG:ALU_WRITEBACK]");
-    $display("  alu_out        = 0x%h", alu_out);
-    $display("  c_eo           = %b", c_eo);
-    $display("  bus            = 0x%h", bus);
-    $display("  reg_dst_addr   = %0d", instruction[5:3]);  // if this selects register
-    $display("  regfile_we     = %b", c_rfi);             // ensure regfile write enable
+    $display("[ALU WRITEBACK] R%0d <= %02h  (dest=REG_A)", REG_A, alu_out);
+  end
+end
+always_ff @(posedge internal_clk) begin
+  if (is_LDI && state == STATE_LOAD_IMM && c_rfi === 1'b1) begin
+    $display("[LDI WRITE] R%0d <= %02h", wb_dst, imm_out);
   end
 end
 always_ff @(posedge clk) begin
@@ -464,6 +504,40 @@ always_ff @(posedge clk) begin
         $display("[IR DEBUG] After next clock, regi_out should be %h", bus);
     end
 end
+// ── Debug mirror of register file (A..T) ─────────────────────────
+logic [7:0] regs_mirror [0:7];
+integer i;
+
+always_ff @(posedge internal_clk or posedge reset) begin
+  if (reset) begin
+    for (i = 0; i < 8; i++) regs_mirror[i] <= 8'h00; // avoid 'xx'
+  end else if (c_rfi === 1'b1) begin
+    regs_mirror[sel_in] <= bus; // mirror any writeback
+  end
+end
+
+task automatic dump_regs;
+  $display("REGS: A:%02h B:%02h C:%02h D:%02h E:%02h F:%02h G:%02h T:%02h",
+           regs_mirror[0], regs_mirror[1], regs_mirror[2], regs_mirror[3],
+           regs_mirror[4], regs_mirror[5], regs_mirror[6], regs_mirror[7]);
+endtask
+
+always_ff @(posedge internal_clk) begin
+  if (c_rfi === 1'b1) begin
+    $display("[REG WRITE] R%0d <= %02h (mirror)", sel_in, bus);
+    dump_regs();
+  end
+end
+
+// Also nice to see them at halt:
+always_ff @(posedge c_halt) begin
+  $display("============================================");
+  $display("CPU halted normally.");
+  dump_regs();
+end
+always_ff @(posedge clk) if (instruction != opcode)
+  $display("[WARN] IR/opcode mismatch: IR=%02h opcode=%02h", instruction, opcode);
+
 always_ff @(posedge clk) if (state == STATE_FETCH_IMM)
   $display("[FETCH_IMM DEBUG] bus=%h bus_ready=%b c_ie=%b imm_out=%h",
            bus, bus_ready, c_ie, imm_out);

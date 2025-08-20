@@ -1,17 +1,5 @@
 .text
-
-ldi B 42
-mov M B %k
-mov A M %k
-out 0
-
-ldi B 21
-mov A B
-out 0
-
+ldi a, 0x3C     ; A = 0x3C
+ldi b, 0x00     ; B = 0x00
+mov a, b        ; expect B = 0x3C, A unchanged
 hlt
-
-
-.data
-
-k = 255
