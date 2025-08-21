@@ -1,4 +1,31 @@
-  module cpu (
+// ============================================================================
+// cpu.sv — 8-bit microcoded CPU
+// ----------------------------------------------------------------------------
+// Orientation for ASIC/RTL newcomers
+// • This core uses ONE shared 8-bit internal data bus (`bus`). Only one block
+//   may drive it at a time. We explicitly qualify every potential driver with
+//   a "drive enable" and then gate that enable with `=== 1'b1` to avoid
+//   accidental multi-drives due to X/Z in simulation. In synthesis this
+//   tri-stated bus is typically inferred as a mux.
+// • The address bus (`addr_bus`) is separate and comes from the Memory Address
+//   Register (MAR).
+// • A simple 3-phase micro-cycle ring counter makes three non-overlapping
+//   phases: cycle_clk → mem_clk → internal_clk.
+// • Program Counter (PC) and Stack Pointer (SP) are 8-bit up/down counters.
+// • The register file has one read port (can drive the shared bus) and one
+//   write port (can capture from the shared bus).
+// • The ALU updates flags (Zero/Carry). Some control flow uses those flags.
+// • `cpu_ctrl` (FSM) decodes the current instruction/phase/handshake and raises
+//   control strobes (e.g., register file enable, PC inc/load, etc.).
+//
+// Synthesis notes
+// • Internal tri-states aren’t synthesized in most ASIC flows; expect a mux.
+// • We treat `bus_ready` as “external memory is actually driving valid data.”
+// • `mem_io` differentiates memory vs I/O cycles for your top-level memory map.
+// ----------------------------------------------------------------------------
+// ============================================================================
+
+module cpu (
     input  logic       clk,
     input  logic       reset,
     output logic [7:0] addr_bus,
@@ -9,13 +36,13 @@
     inout  tri   [7:0] bus
   );
 
-logic        pc_enable;   
-logic        pc_load;
-logic        pc_dec;      
-logic        c_rfi, c_rfo;
+logic        pc_enable;   // (declared; note: enable gating is handled via derived signals)
+logic        pc_load;     // PC load (bus → PC)
+logic        pc_dec;      // PC decrement (used by stack/flow)
+logic        c_rfi, c_rfo; // register file write/read enables (sink/source for shared bus)
 
     // ---------------------------------------------------------------
-    //  Opcode, state, ALU‑mode, jump‑condition, and register codes
+    //  Opcode, state, ALU-mode, jump-condition, and register codes
     // ---------------------------------------------------------------
     localparam [7:0]
       OP_NOP  = 8'b00_000_000, //no operation
@@ -33,35 +60,38 @@ logic        c_rfi, c_rfo;
       OP_POP  = 8'b00_101_000, // restores top from stack onto reg
       OP_ALU  = 8'b01_000_000, //ALU add subtract inc dec and or
       OP_MOV  = 8'b10_000_000; // moves data between registers
+// ^ Above encodes instruction classes in the top 2 bits and sub-ops in the fields.
 
 localparam [7:0]
+  // Micro-states for the control FSM. These sequence each instruction.
   STATE_NEXT         = 8'h00,
-  STATE_FETCH_PC     = 8'h01,
-  STATE_FETCH_INST   = 8'h02,
+  STATE_FETCH_PC     = 8'h01, // put PC on the bus → MAR
+  STATE_FETCH_INST   = 8'h02, // read instruction byte into IR
   STATE_HALT         = 8'h03,
-  STATE_JUMP         = 8'h04,
-  STATE_OUT          = 8'h05,
-  STATE_ALU_OUT      = 8'h06,
-  STATE_ALU_EXEC     = 8'h07,
-  STATE_MOV_STORE    = 8'h08,
-  STATE_MOV_FETCH    = 8'h09,
-  STATE_MOV_LOAD     = 8'h0A,
-  STATE_FETCH_SP     = 8'h0C,
-  STATE_PC_STORE     = 8'h0D,
-  STATE_TMP_JUMP     = 8'h0E,
-  STATE_RET          = 8'h0F,
-  STATE_INC_SP       = 8'h10,
-  STATE_SET_ADDR     = 8'h11,
-  STATE_IN           = 8'h12,
-  STATE_REG_STORE    = 8'h13,
-  STATE_SET_REG      = 8'h14,
-  STATE_LOAD_IMM     = 8'h15,
-  STATE_WAIT_FOR_RAM = 8'h16,
-  STATE_ALU_WRITEBACK= 8'h17,
-  STATE_FETCH_IMM    = 8'h19,
-  STATE_WAIT_IMM     = 8'h1A;  
+  STATE_JUMP         = 8'h04, // conditional jump path (uses flags)
+  STATE_OUT          = 8'h05, // I/O write cycle
+  STATE_ALU_OUT      = 8'h06, // ALU result drives bus
+  STATE_ALU_EXEC     = 8'h07, // ALU computes; flags update here
+  STATE_MOV_STORE    = 8'h08, // MOV reg→mem store phase
+  STATE_MOV_FETCH    = 8'h09, // MOV mem→reg address phase
+  STATE_MOV_LOAD     = 8'h0A, // MOV mem→reg data phase
+  STATE_FETCH_SP     = 8'h0C, // SP → bus (stack ops)
+  STATE_PC_STORE     = 8'h0D, // write return PC (during CALL)
+  STATE_TMP_JUMP     = 8'h0E, // helper
+  STATE_RET          = 8'h0F, // return PC from stack (RET)
+  STATE_INC_SP       = 8'h10, // POP post-increment
+  STATE_SET_ADDR     = 8'h11, // helper: MAR load
+  STATE_IN           = 8'h12, // I/O read cycle
+  STATE_REG_STORE    = 8'h13, // PUSH: write to memory
+  STATE_SET_REG      = 8'h14, // writeback into register file
+  STATE_LOAD_IMM     = 8'h15, // LDI: drive immediate onto bus
+  STATE_WAIT_FOR_RAM = 8'h16, // wait for external RAM to drive bus
+  STATE_ALU_WRITEBACK= 8'h17, // ALU → REG_A architectural writeback
+  STATE_FETCH_IMM    = 8'h19, // fetch immediate operand
+  STATE_WAIT_IMM     = 8'h1A;  // wait for immediate to be valid (bus_ready)
 
     localparam [2:0]
+      // ALU op encodings (used when instruction class is OP_ALU)
       ALU_ADD = 3'b000,
       ALU_SUB = 3'b001,
       ALU_INC = 3'b010,
@@ -72,39 +102,48 @@ localparam [7:0]
       ALU_ADC = 3'b111;
 
     localparam [2:0]
+      // Jump condition codes (consumed by JMP sub-ops)
       JMP_JMP = 3'b000,
       JMP_JZ  = 3'b001,
       JMP_JNZ = 3'b010,
       JMP_JC  = 3'b011,
       JMP_JNC = 3'b100;
 
-    localparam [2:0] REG_A = 3'b000,
-                    REG_T = 3'b111;
+    localparam [2:0] REG_A = 3'b000, // canonical accumulator
+                    REG_T = 3'b111; // scratch/pseudo-mem register used by MOV[mem] paths
 
     // ---------------------------------------------------------------
-    //  Internal shared‑bus framework (one driver per source)
+    //  Internal shared-bus framework (one driver per source)
     // ---------------------------------------------------------------
+    // Each datapath block that *might* drive the bus presents:
+    // • its data (`bus_from_*`) and
+    // • a drive-enable (`bus_drive_*`).
+    // Later, we gate those enables through "safe_*" to mask X/Z in sim.
     logic [7:0] bus_from_pc,  bus_from_sp,  bus_from_alu, bus_from_reg;
     logic       bus_drive_pc, bus_drive_sp, bus_drive_alu, bus_drive_reg;
 
     // ---------------------------------------------------------------
     //  Status flags, clocks and cycle generator
     // ---------------------------------------------------------------
-    logic flag_zero, flag_carry;
+    logic flag_zero, flag_carry; // Z and C flags are produced by the ALU
 
-// 8 regs → 3-bit index
+// 8 regs → 3-bit index for the register file ports
 typedef logic [2:0] regid_t;
 
-// From IR
+// Operand fields captured from the IR (instruction register).
+// NOTE: SystemVerilog allows strong typing here; some tools prefer just `regid_t`.
+// Keep as-is per your request (comments only).
 wire regid_t operand_src = regi_out[5:3]; // bits [5:3]
 wire regid_t operand_dst = regi_out[2:0]; // bits [2:0]
-regid_t sel_in, sel_out;
+regid_t sel_in, sel_out; // register file write-port select / read-port select
 
+    // 3-phase ring counter generates cycle_clk → mem_clk → internal_clk
     logic cycle_clk    = 0;
     logic internal_clk = 0;
+    logic [3:0] cycle;         // (declared later in ctrl hookup, but used for visibility)
     logic [2:0] cnt    = 3'b100;
-    logic halted       = 0;
-    logic c_halt;
+    logic halted       = 0;    // sticky latch for halt state (sim convenience)
+    logic c_halt;              // goes high when FSM enters STATE_HALT
 
     always_ff @(posedge clk) begin
       if (!halted) begin
@@ -116,10 +155,14 @@ regid_t sel_in, sel_out;
         endcase
       end
     end
+    // ^ In ASIC synthesis, treat these as derived enables; ensure clock-gating
+    //   methodology if converting to multi-phase clocks in silicon.
 
     // ---------------------------------------------------------------
-    //  General‑purpose registers
+    //  General-purpose registers
     // ---------------------------------------------------------------
+    // One read port (sources the bus when c_rfo=1) + one write port
+    // (captures the bus when c_rfi=1). A/B are hardwired views for ALU.
     logic [7:0] rega_out, regb_out, regs_out;
 
     cpu_reg m_registers (
@@ -138,8 +181,12 @@ regid_t sel_in, sel_out;
     // ---------------------------------------------------------------
     //  Instruction register
     // ---------------------------------------------------------------
+    // IR latches the fetched instruction byte. We also keep a stable copy
+    // of the low 3 bits (`rd_q`) in the same instant we capture the IR so
+    // that later states (which might change the bus) still have the original
+    // destination field.
     logic [7:0] regi_out;
-      logic       c_ii;
+      logic       c_ii;   // IR load strobe when bus has a valid instruction byte
 
 register m_regi (
   .in    (bus),
@@ -148,7 +195,7 @@ register m_regi (
   .reset (reset),
   .out   (regi_out)
 );
-logic [2:0] rd_q;
+logic [2:0] rd_q; // latched destination bits for non-ALU writebacks
 
 always_ff @(posedge internal_clk or posedge reset) begin
   if (reset) rd_q <= '0;
@@ -161,8 +208,10 @@ end
 wire [2:0] wb_dst = (is_ALU) ? REG_A : rd_q;
 
     // ---------------------------------------------------------------
-    //  Memory‑address  
+    //  Memory-address register (MAR)
     // ---------------------------------------------------------------
+    // MAR holds the address that goes to external memory. For OUT cycles,
+    // you force address 0 (simple I/O map example).
     logic c_mi;
  register m_mar (
  .in    ((state == STATE_OUT && is_OUT) ? 8'h00 : bus),
@@ -176,8 +225,10 @@ wire [2:0] wb_dst = (is_ALU) ? REG_A : rd_q;
     // ---------------------------------------------------------------
     //  Program counter
     // ---------------------------------------------------------------
+    // PC can be loaded from the bus (jumps/calls), incremented (fetch/linear
+    // execution), or decremented (stack/addressing patterns).
     logic [7:0] pc_out;
-    logic       c_co, c_ci, c_j;
+    logic       c_co, c_ci, c_j; // c_co: drive PC → bus; c_ci: increment; c_j: load/branch
 
  counter m_pc (
   .clk        (internal_clk),
@@ -192,6 +243,7 @@ wire [2:0] wb_dst = (is_ALU) ? REG_A : rd_q;
     // ---------------------------------------------------------------
     //  Stack pointer
     // ---------------------------------------------------------------
+    // SP resets to 0xFF. PUSH uses pre-decrement; POP uses post-increment.
     logic [7:0] sp_out;
     logic       c_si, c_sd, c_so;
 
@@ -207,11 +259,15 @@ counter m_sp (
 
 // Group decodes (top 5 bits)
 // ----- Instruction classes (top 2 bits) -----
+// NOTE: `instruction` is a shorthand for `regi_out` declared later below.
+// Many tools accept this forward reference; if yours does not, move the alias
+// earlier. (Not changing here per your “comments-only” requirement.)
 wire class00 = (instruction[7:6] == 2'b00);
 wire class01 = (instruction[7:6] == 2'b01);
 wire class10 = (instruction[7:6] == 2'b10);
 
 // ----- Group decodes -----
+// Class 01 → ALU, class 10 → MOV, class 00 → control/LDI/JMP/PUSH/POP/...
 wire is_ALU  = class01;                               // 01_op_dst
 wire is_MOV  = class10;                               // 10_src_dst
 wire is_LDI  = class00 && (instruction[5:3] == 3'b010);
@@ -229,13 +285,15 @@ wire is_HLT  = (instruction == OP_HLT );
 wire is_CMP  = (instruction == OP_CMP );
 
 // ----- ALU op field and selection -----
+// For ALU class, take op from instruction[5:3]. For CMP, reuse SUB to set flags,
+// and otherwise default is don't-care when ALU disabled.
 wire [2:0] op_field = instruction[5:3];
 assign alu_op =
   is_ALU ? op_field :
   is_CMP ? ALU_SUB  : ALU_ADD;  // default doesn't matter; ALU disabled outside ALU/CMP
 
-    wire       c_eo_alu;
-    logic c_ee;
+    wire       c_eo_alu; // ALU bus-drive enable (derived from state)
+    logic c_ee;          // ALU execute/enable (computes/updates flags)
     logic [7:0] alu_out;
     logic [2:0] alu_op;
 
@@ -252,12 +310,15 @@ assign alu_op =
     );
 
     assign c_eo_alu = (state == STATE_ALU_OUT || state == STATE_ALU_WRITEBACK);
+    // ALU can legally drive the bus only when putting result out or during writeback.
 
   // ---------------------------------------------------------------
   //  Immediate value register for LDI
   // ---------------------------------------------------------------
+  // Two-cycle LDI: fetch immediate from memory, then drive it onto the bus
+  // for register writeback.
   logic [7:0] imm_out;
-  logic       c_ie;
+  logic       c_ie; // load enable for immediate register (only when RAM is driving valid data)
 
   register m_imm (
     .in     (bus),
@@ -266,11 +327,14 @@ assign alu_op =
     .reset  (reset),
     .out    (imm_out)
   );
-  // Mask X/Z on enable lines so only definite 1 drives bus
+
+  // Mask X/Z on enable lines so only definite 1 drives bus in sim.
+  // (Helps catch unintended multi-drives in waveforms/logs.)
   logic safe_bus_drive_pc;
   logic safe_bus_drive_sp;
   logic safe_bus_drive_alu;
   logic safe_bus_drive_reg;
+
   // ------------------------------------------------------------------
   // Datapath -> shared-bus connections
   // ------------------------------------------------------------------
@@ -283,16 +347,14 @@ assign alu_op =
   assign bus_from_alu = alu_out;
   assign bus_drive_alu = c_eo_alu;         // ALU out
   logic c_eo_imm;
-assign c_eo_imm = is_LDI && (state == STATE_LOAD_IMM);
+assign c_eo_imm = is_LDI && (state == STATE_LOAD_IMM); // LDI drives immediate onto the bus
 
-
-
-
-
+  // Composite “any CPU datapath driving?” — used later in debug mirrors
   wire c_eo;
 
   assign bus_from_reg = regs_out;
   assign bus_drive_reg = c_rfo;        // register file out
+
 // --------------------------------------------
 // Safe Bus Driver So shit doesnt get overwritten
 // --------------------------------------------
@@ -307,7 +369,10 @@ assign c_eo_imm = is_LDI && (state == STATE_LOAD_IMM);
   assign bus_from_imm  = imm_out;
 assign bus_drive_imm = (is_LDI && (state == STATE_LOAD_IMM));
   assign safe_bus_drive_imm = (bus_drive_imm === 1'b1);
+
 // MUX BUS
+// Final shared bus select. In ASIC synthesis this tri bus becomes a mux tree.
+// Priority order here: PC > SP > ALU > REG > IMM (only one should be true).
 assign bus =
        (safe_bus_drive_pc  ? bus_from_pc  :
         safe_bus_drive_sp  ? bus_from_sp  :
@@ -315,17 +380,23 @@ assign bus =
         safe_bus_drive_reg ? bus_from_reg :
         safe_bus_drive_imm ? bus_from_imm :
                              8'hZZ);
+
+// Immediate capture happens when RAM is driving the bus and we’re in WAIT_IMM.
 assign c_ie = (state == STATE_WAIT_IMM) && bus_ready;
-
-
 
 
     //  ---------------------------------------------------------------
     //  Control logic & FSM (unchanged except for regs_out path)
     //  ---------------------------------------------------------------
+// IR shorthand (used by many decodes above). See note about forward reference.
 wire [7:0] instruction = regi_out;
+
 // handy shorthand
 wire push_write = (state == STATE_REG_STORE) || (state == STATE_MEM_WRITE);
+
+// External RAM convenience wires (abstracted here; typically hooked to a RAM macro)
+logic       ram_we, ram_oe;
+logic [7:0] ram_din;
 
 // Write-enable the RAM for BOTH cycles of the push
 assign ram_we = push_write;
@@ -339,43 +410,54 @@ assign ram_oe = !( // only enable during reads/fetches
 
 // Data to RAM comes from the system bus (driven by the source register)
 assign ram_din = bus;
-// Bus is ready when someone (RAM) has driven a valid value
+
+// Bus is ready when external RAM is enabled and (for memory cycles) is actually
+// driving a non-Z value on the bus.
 logic bus_ready;
 assign bus_ready = (c_ro && !mem_io && (bus !== 8'hZZ));
 
-    logic [7:0] opcode;
-    logic [7:0] state;
-    logic [3:0] cycle;
-assign operand1 = regi_out[5:3];
+    logic [7:0] opcode; // latched/decoded opcode for visibility
+    logic [7:0] state;  // FSM state
+    // `cycle` declared above with clocks; ctrl fills it for debug
+assign operand1 = regi_out[5:3]; // operand fields (secondary shorthand)
 assign operand2 = regi_out[2:0];
-    logic       next_state = (state == STATE_NEXT) | reset;
+    logic       next_state = (state == STATE_NEXT) | reset; // helper visibility
 
+    // mem_io high → I/O cycle; low → memory cycle
     assign mem_io = (state == STATE_OUT || state == STATE_IN);
 
+    // MOV uses REG_T (alias 111) to denote memory ref in either src or dst
     logic mov_memory   = (operand1 == 3'b111 || operand2 == 3'b111);
+
+    // Jump condition resolution (consumes ALU flags)
     logic jump_allowed = (operand2 == JMP_JMP) ||
                         ((operand2 == JMP_JZ)  && flag_zero) ||
                         ((operand2 == JMP_JNZ) && !flag_zero) ||
                         ((operand2 == JMP_JC)  && flag_carry) ||
                         ((operand2 == JMP_JNC) && !flag_carry);
 
+// Register-file write-port select (who captures the bus when c_rfi=1)
 assign sel_in =  //egister-file write-port select.
        (is_MOV)            ? operand_dst :
        (is_ALU || is_IN)   ? REG_A       :
        (is_POP || is_LDI)  ? operand_dst :
        (is_CALL)           ? REG_T       : '0;
 
+// Register-file read-port select (who drives the bus when c_rfo=1)
 assign sel_out =  //register-file read-port select (drives bus).
        (is_MOV)  ? operand_src :
        (is_OUT)  ? REG_A       :
        (is_CALL) ? REG_T       :
        (is_PUSH) ? operand_src :
                    '0;
-localparam [7:0] STATE_DEC_SP  = 8'h18;
 
+localparam [7:0] STATE_DEC_SP  = 8'h18; // pre-decrement for PUSH
+
+   // IR load (Instruction-In) when fetching an instruction and the bus is ready.
    assign c_ii = (state == STATE_FETCH_INST) && bus_ready; 
-   //IR load (Instruction-In) when fetching an instruction and the bus is ready.
 
+// PC increment (Counter-Inc) after a byte is consumed: fetch, imm fetch, RET,
+// allowed JUMP/TMP_JUMP, and MOV[mem] address phase.
 assign c_ci 
 //PC increment (Counter-Inc) after a byte is consumed: 
 // fetch, imm fetch, RET, allowed JUMP/TMP_JUMP, MOV from memory.
@@ -386,6 +468,7 @@ assign c_ci
                (state == STATE_TMP_JUMP   && bus_ready) ||
                ((state == STATE_MOV_FETCH) && mov_memory && bus_ready));
 
+// PC → bus during address-formers and immediate fetches
 assign c_co = 
 //PC out to bus
 //during FETCH_PC, PC_STORE, memory MOV fetch, and immediate fetch.
@@ -393,10 +476,12 @@ assign c_co =
            || (state == STATE_PC_STORE)
            || (state == STATE_MOV_FETCH && mov_memory)
            || (state == STATE_FETCH_IMM);   
+
+// Simple visibility print of MAR captures (no functional effect)
 always_ff @(posedge internal_clk) if (c_mi)
   $display("[MAR] <= %02h", bus);
 
-// Optional: keep the warning but time it correctly
+// One-shot checker: after capturing IR, compare to controller’s opcode
 logic arm_compare;
 always_ff @(posedge internal_clk or posedge reset) begin
   if (reset) arm_compare <= 1'b0;
@@ -414,11 +499,14 @@ end
                     state == STATE_RET ||
                     state == STATE_TMP_JUMP); //Jump / PC load strobe on allowed JUMP, RET, or TMP_JUMP.
 
+// MAR load from bus during address-forming and immediate fetch
 assign c_mi //MAR in (capture address from bus) during FETCH_PC, FETCH_SP, memory MOV fetch, FETCH_IMM.
 = (state == STATE_FETCH_PC)
            || (state == STATE_FETCH_SP)
            || (state == STATE_MOV_FETCH && mov_memory)
            || (state == STATE_FETCH_IMM);   
+
+// RAM read enable during instruction/data fetches and POP/RET/JUMP paths
 assign c_ro = //RAM out / memory read enable during instruction fetches (FETCH_INST, WAIT_FOR_RAM, WAIT_IMM), MOV load from memory, the special MOV store case 
 // when operand2==3'b111, allowed JUMP, RET, and POP path in STATE_SET_REG.
        (state == STATE_FETCH_INST)     ||
@@ -429,23 +517,34 @@ assign c_ro = //RAM out / memory read enable during instruction fetches (FETCH_I
        (state == STATE_JUMP && jump_allowed) ||
        (state == STATE_RET)            ||
        ((state == STATE_SET_REG) && is_POP); 
-localparam [7:0] STATE_MEM_WRITE = 8'h1B;
+
+localparam [7:0] STATE_MEM_WRITE = 8'h1B; // write-hold to satisfy memory timing
+
+// RAM write enable for MOV→[mem], PUSH, write-hold, and CALL PC store
 assign c_ri = //RAM in / memory write enable when writing memory: MOV to [mem] 
 //(operand1==3'b111), PUSH (STATE_REG_STORE), the synchronous write hold
 // (STATE_MEM_WRITE), and PC_STORE (e.g., CALL saves return addr).
-       ((state == STATE_MOV_STORE) && (operand1 == 3'b111)) // MOV r -> [mem]
+       ((state == STATE_MOV_STORE) && (operand1 == 3'b111)) 
     ||  (state == STATE_REG_STORE)                          // PUSH write
     ||  (state == STATE_MEM_WRITE)                          // hold for RAM edge
     ||  (state == STATE_PC_STORE);                          // CALL                      
 
+// Stack discipline: expose SP on bus / pre-dec / post-inc at the right times
 //c_so — SP out to bus during FETCH_SP. 
 //c_sd — SP decrement (pre-decrement for PUSH) in STATE_DEC_SP.
 //c_si — SP increment (post-increment for POP) in STATE_INC_SP.
 assign c_so = (state == STATE_FETCH_SP);  
 assign c_sd = (is_PUSH && state == STATE_DEC_SP);  
 assign c_si = (is_POP  &&  state == STATE_INC_SP);                      
+
+    // ALU computes/updates flags only in EXEC
     assign c_ee = (state == STATE_ALU_EXEC); //ALU execute/enable during STATE_ALU_EXEC.
 
+// ------------------------------------------------------------------
+// Hook up the microcoded controller (sequencer)
+// ------------------------------------------------------------------
+// NOTE: `c_eo` is unused for ALU (we derive ALU bus-drive from state),
+// but we still wire it for completeness/visibility.
 always_ff @(posedge internal_clk) begin
   if (reset) $display("[SP RESET] sp_out <= %02h", sp_out);
   if (state == STATE_FETCH_SP)
@@ -471,7 +570,7 @@ cpu_ctrl m_ctrl (
 );
 
 // -------------------------------------------------
-// DECODE BLOCK
+// DECODE BLOCK (visibility/printf style debug)
 // -------------------------------------------------
 always_ff @(posedge clk) begin
   if (state == STATE_LOAD_IMM && opcode == OP_LDI) begin
